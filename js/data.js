@@ -55,8 +55,20 @@
   const fieldError = (errors) => Object.assign(new Error('資料有誤，請檢查欄位'), { fieldErrors: errors });
 
   /* ---------- 狀態 ---------- */
+  // deleted：刪除紀錄（墓碑），跨裝置同步時用來避免已刪除的資料又被另一台裝置帶回來
+  //   k = 'a:<帳號id>' 或 'r:<帳號id>|<日期>'，at = 刪除時間
   function emptyState() {
-    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null }, accounts: [], records: [] };
+    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, updatedAt: null }, accounts: [], records: [], deleted: [] };
+  }
+
+  const nowISO = () => new Date().toISOString();
+  const recKey = (r) => `${r.accountId}|${r.date}`;
+  const TOMB_DAYS = 180;
+  function pruneTombs(list) {
+    const cutoff = new Date(Date.now() - TOMB_DAYS * 864e5).toISOString();
+    const latest = new Map();
+    list.forEach((t) => { if (t && t.k && t.at && t.at >= cutoff && (!latest.has(t.k) || latest.get(t.k) < t.at)) latest.set(t.k, t.at); });
+    return Array.from(latest, ([k, at]) => ({ k, at }));
   }
 
   // 驗證並整理外部讀入的資料（localStorage 或備份檔），不合法就丟出錯誤，不做猜測修正
@@ -69,7 +81,9 @@
       if (obj.settings.currencyName) state.settings.currencyName = String(obj.settings.currencyName).slice(0, 12);
       if (obj.settings.lastBackupAt) state.settings.lastBackupAt = String(obj.settings.lastBackupAt);
       if (Number.isInteger(obj.settings.monthlyGoal) && obj.settings.monthlyGoal > 0) state.settings.monthlyGoal = obj.settings.monthlyGoal;
+      if (obj.settings.updatedAt) state.settings.updatedAt = String(obj.settings.updatedAt);
     }
+    if (Array.isArray(obj.deleted)) state.deleted = pruneTombs(obj.deleted.map((t) => ({ k: String(t && t.k || ''), at: String(t && t.at || '') })));
     const ids = new Set();
     obj.accounts.forEach((a, i) => {
       if (!a || !a.id || !a.name) throw new Error(`第 ${i + 1} 個帳號缺少 id 或名稱`);
@@ -83,6 +97,7 @@
         status: a.status === 'inactive' ? 'inactive' : 'active',
         colorIndex: Number.isInteger(a.colorIndex) ? a.colorIndex : i % PALETTE.length,
         createdAt: a.createdAt || new Date().toISOString(),
+        updatedAt: a.updatedAt || a.createdAt || new Date().toISOString(),
       });
     });
     const seen = new Set();
@@ -117,6 +132,50 @@
     const used = new Set(state.accounts.map((a) => a.colorIndex % PALETTE.length));
     for (let i = 0; i < PALETTE.length; i++) if (!used.has(i)) return i;
     return state.accounts.length % PALETTE.length;
+  }
+
+  /* ---------- 跨裝置合併 ----------
+   * 兩份資料（本機、雲端）逐項合併，不整份覆蓋：
+   *   帳號依 id、記錄依「帳號＋日期」比對，各自保留修改時間較新的那一份；
+   *   刪除紀錄比資料新的就刪掉；兩邊各自新增的同名帳號會合併成一個（保留較早建立的）。
+   */
+  function mergeStates(a, b) {
+    const tombs = pruneTombs([...(a.deleted || []), ...(b.deleted || [])]);
+    const tombAt = new Map(tombs.map((t) => [t.k, t.at]));
+    const newer = (x, y) => ((x.updatedAt || '') >= (y.updatedAt || '') ? x : y);
+
+    const accById = new Map();
+    [...a.accounts, ...b.accounts].forEach((x) => { const cur = accById.get(x.id); accById.set(x.id, cur ? newer(cur, x) : x); });
+    let accounts = Array.from(accById.values()).filter((x) => !(tombAt.get('a:' + x.id) >= (x.updatedAt || '')));
+    accounts.sort((x, y) => (x.createdAt < y.createdAt ? -1 : x.createdAt > y.createdAt ? 1 : (x.id < y.id ? -1 : 1)));
+    const remap = new Map();
+    const byName = new Map();
+    accounts = accounts.filter((x) => {
+      const n = x.name.trim().toLowerCase();
+      if (byName.has(n)) { remap.set(x.id, byName.get(n)); return false; }
+      byName.set(n, x.id);
+      return true;
+    });
+    const alive = new Set(accounts.map((x) => x.id));
+
+    const recByKey = new Map();
+    [...a.records, ...b.records].forEach((r0) => {
+      const r = remap.has(r0.accountId) ? { ...r0, accountId: remap.get(r0.accountId) } : r0;
+      if (!alive.has(r.accountId)) return;
+      const k = recKey(r);
+      const cur = recByKey.get(k);
+      recByKey.set(k, cur ? newer(cur, r) : r);
+    });
+    const records = Array.from(recByKey.values())
+      .filter((r) => !(tombAt.get('r:' + recKey(r)) >= (r.updatedAt || '')))
+      .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : x.accountId < y.accountId ? -1 : 1));
+
+    const sa = a.settings || {}; const sb = b.settings || {};
+    const settings = { ...((sa.updatedAt || '') >= (sb.updatedAt || '') ? sa : sb) };
+    const backups = [sa.lastBackupAt, sb.lastBackupAt].filter(Boolean).sort();
+    settings.lastBackupAt = backups.length ? backups[backups.length - 1] : null;
+
+    return { version: SCHEMA_VERSION, settings, accounts, records, deleted: tombs };
   }
 
   /* ---------- 衍生計算 ----------
@@ -177,7 +236,8 @@
     onChange(fn) { this._listeners.push(fn); },
 
     // 所有寫入都經過這裡：失敗時還原記憶體中的狀態，避免畫面與儲存不一致
-    _commit(mutator) {
+    // source：'local'（使用者操作）或 'sync'（雲端同步帶進來的），讓監聽者分辨
+    _commit(mutator, source = 'local') {
       const before = JSON.stringify(this.state);
       let result;
       try {
@@ -190,8 +250,18 @@
         throw e;
       }
       this._derived = null;
-      this._listeners.forEach((fn) => fn());
+      this.lastSource = source;
+      this._listeners.forEach((fn) => fn(source));
       return result;
+    },
+
+    _tomb(s, k) {
+      s.deleted = pruneTombs([...(s.deleted || []), { k, at: nowISO() }]);
+    },
+
+    // 雲端同步合併後的結果寫回本機（不建立「還原前」暫存）
+    applySynced(next) {
+      return this._commit(() => { this.state = next; }, 'sync');
     },
 
     derived() {
@@ -201,7 +271,7 @@
 
     /* 設定 */
     updateSettings(patch) {
-      return this._commit((s) => { Object.assign(s.settings, patch); });
+      return this._commit((s) => { Object.assign(s.settings, patch, { updatedAt: nowISO() }); });
     },
     markBackup() {
       return this._commit((s) => { s.settings.lastBackupAt = new Date().toISOString(); });
@@ -233,7 +303,8 @@
       const { errors, value } = this.validateAccount(input);
       if (Object.keys(errors).length) throw fieldError(errors);
       return this._commit((s) => {
-        const acc = { id: uid('a'), ...value, colorIndex: nextColorIndex(s), createdAt: new Date().toISOString() };
+        const now = nowISO();
+        const acc = { id: uid('a'), ...value, colorIndex: nextColorIndex(s), createdAt: now, updatedAt: now };
         s.accounts.push(acc);
         return acc;
       });
@@ -244,13 +315,14 @@
       if (!current) throw new Error('找不到這個帳號');
       const { errors, value } = this.validateAccount({ ...current, ...input }, id);
       if (Object.keys(errors).length) throw fieldError(errors);
-      return this._commit((s) => { Object.assign(s.accounts.find((a) => a.id === id), value); });
+      return this._commit((s) => { Object.assign(s.accounts.find((a) => a.id === id), value, { updatedAt: nowISO() }); });
     },
 
     deleteAccount(id) {
       return this._commit((s) => {
         s.accounts = s.accounts.filter((a) => a.id !== id);
         s.records = s.records.filter((r) => r.accountId !== id);
+        this._tomb(s, 'a:' + id);
       });
     },
 
@@ -283,7 +355,12 @@
       return this._commit((s) => {
         const now = new Date().toISOString();
         const target = targetId && s.records.find((r) => r.id === targetId);
-        if (target) { Object.assign(target, value, { updatedAt: now }); return { record: target, mode: 'updated' }; }
+        if (target) {
+          // 改了日期或帳號：舊的位置留下刪除紀錄，同步時才不會在另一台裝置變成兩筆
+          if (recKey(target) !== recKey(value)) this._tomb(s, 'r:' + recKey(target));
+          Object.assign(target, value, { updatedAt: now });
+          return { record: target, mode: 'updated' };
+        }
         const rec = { id: uid('r'), ...value, updatedAt: now };
         s.records.push(rec);
         return { record: rec, mode: 'created' };
@@ -304,7 +381,11 @@
     },
 
     deleteRecord(id) {
-      return this._commit((s) => { s.records = s.records.filter((r) => r.id !== id); });
+      return this._commit((s) => {
+        const r = s.records.find((x) => x.id === id);
+        s.records = s.records.filter((x) => x.id !== id);
+        if (r) this._tomb(s, 'r:' + recKey(r));
+      });
     },
 
     // 套用 CSV 匯入計畫
@@ -320,7 +401,7 @@
             if (!createMissing) { skipped++; return; }
             if (!keyToId.has(it.acctKey)) {
               const info = analysis.newAccounts.get(it.acctKey);
-              const acc = { id: uid('a'), name: info.name, gameId: info.gameId || '', note: '由 CSV 匯入建立', status: 'active', colorIndex: nextColorIndex(s), createdAt: now };
+              const acc = { id: uid('a'), name: info.name, gameId: info.gameId || '', note: '由 CSV 匯入建立', status: 'active', colorIndex: nextColorIndex(s), createdAt: now, updatedAt: now };
               s.accounts.push(acc);
               keyToId.set(it.acctKey, acc.id);
               accountsCreated++;
@@ -346,7 +427,21 @@
       try {
         localStorage.setItem(PREV_KEY, JSON.stringify({ savedAt: new Date().toISOString(), data: this.state }));
       } catch (_) { /* 空間不足時仍允許繼續 */ }
-      return this._commit(() => { this.state = next; });
+      return this._commit(() => { this.state = this._asReplacement(next); });
+    },
+    // 「整份取代」在同步時也要成立：新資料標成最新、沒留下來的舊資料加上刪除紀錄
+    _asReplacement(next) {
+      const now = nowISO();
+      const keepIds = new Set(next.accounts.map((a) => a.id));
+      const keepKeys = new Set(next.records.map(recKey));
+      const tombs = [...(this.state.deleted || []), ...(next.deleted || [])];
+      this.state.accounts.forEach((a) => { if (!keepIds.has(a.id)) tombs.push({ k: 'a:' + a.id, at: now }); });
+      this.state.records.forEach((r) => { if (!keepKeys.has(recKey(r))) tombs.push({ k: 'r:' + recKey(r), at: now }); });
+      next.accounts.forEach((a) => { a.updatedAt = now; });
+      next.records.forEach((r) => { r.updatedAt = now; });
+      next.settings = { ...next.settings, updatedAt: now };
+      next.deleted = pruneTombs(tombs).filter((t) => !(t.k.startsWith('a:') && keepIds.has(t.k.slice(2))) && !(t.k.startsWith('r:') && keepKeys.has(t.k.slice(2))));
+      return next;
     },
     previousSnapshot() {
       try { const raw = localStorage.getItem(PREV_KEY); return raw ? JSON.parse(raw) : null; } catch (_) { return null; }
@@ -355,7 +450,7 @@
       const snap = this.previousSnapshot();
       if (!snap) throw new Error('沒有可以復原的資料');
       const data = normalizeState(snap.data);
-      this._commit(() => { this.state = data; });
+      this._commit(() => { this.state = this._asReplacement(data); });
       try { localStorage.removeItem(PREV_KEY); } catch (_) { /* ignore */ }
     },
     sizeBytes() {
@@ -637,7 +732,7 @@
   }
 
   global.GCT = {
-    Store, Calc, CSV, PALETTE, parseAmount, buildDemoState, normalizeState,
+    Store, Calc, CSV, PALETTE, parseAmount, buildDemoState, normalizeState, mergeStates,
     D: { todayISO, addDays, daysBetween, isISODate, normalizeDate, eachDay, parseISO, toISO },
   };
 })(window);

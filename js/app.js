@@ -71,6 +71,9 @@
     spend: '<path d="M12 5v14"/><path d="m6 13 6 6 6-6"/>',
     pie: '<path d="M21 12A9 9 0 1 1 12 3v9Z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15Z"/>',
     phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+    cloud: '<path d="M7 18.5h10a4.5 4.5 0 0 0 .6-9 6 6 0 0 0-11.5 1.6A3.8 3.8 0 0 0 7 18.5Z"/>',
+    cloudOff: '<path d="M7 18.5h10a4.5 4.5 0 0 0 .6-9 6 6 0 0 0-11.5 1.6A3.8 3.8 0 0 0 7 18.5Z"/><path d="M3 3l18 18"/>',
+    refresh: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>',
     share: '<path d="M12 15V3"/><path d="m8 7 4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>',
   };
   const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -343,6 +346,36 @@
     return Store.accounts().filter((a) => a.status === 'active' && !Store.recordFor(a.id, today));
   };
 
+  /* ---------- 雲端同步狀態 ---------- */
+  const Sync = window.GCTSync;
+  const SYNC_TEXT = {
+    idle: '準備同步', syncing: '同步中…', ok: '已同步', offline: '離線中，連線後自動同步',
+    auth: '需要重新登入 Google 才能同步', error: '同步失敗', off: '未啟用雲端同步',
+  };
+  const syncAgo = () => {
+    if (!Sync || !Sync.lastAt) return '尚未同步過';
+    const m = Math.round((Date.now() - Sync.lastAt) / 60000);
+    return m < 1 ? '剛剛同步' : m < 60 ? `${m} 分鐘前同步` : `${fmtDate(D.toISO(new Date(Sync.lastAt)))} 同步`;
+  };
+  function updateSyncIndicator() {
+    const btn = $('#syncBtn');
+    if (btn && Sync) {
+      const st = Sync.status;
+      btn.className = `round-btn sync-btn is-${st}`;
+      btn.innerHTML = `${icon(st === 'offline' || st === 'auth' || st === 'error' ? 'cloudOff' : st === 'syncing' ? 'refresh' : 'cloud')}${st === 'auth' || st === 'error' ? '<span class="dot-badge is-dot"></span>' : ''}`;
+      const tip = `${SYNC_TEXT[st] || ''}${Sync.message && st === 'error' ? `：${Sync.message}` : ''}（${syncAgo()}）`;
+      btn.title = tip;
+      btn.setAttribute('aria-label', tip);
+    }
+    const box = $('#syncStatusBox');
+    if (box && Sync) {
+      box.innerHTML = `<span class="sync-dot is-${Sync.status}"></span><b>${SYNC_TEXT[Sync.status] || ''}</b><small>${esc(Sync.status === 'error' ? Sync.message : syncAgo())}</small>`;
+      const again = $('#syncAuthBtn');
+      if (again) again.hidden = Sync.status !== 'auth';
+    }
+  }
+  if (Sync) Sync.onStatus(updateSyncIndicator);
+
   const backupInfo = () => {
     const last = Store.state.settings.lastBackupAt;
     const days = last ? D.daysBetween(D.toISO(new Date(last)), D.todayISO()) : null;
@@ -370,6 +403,7 @@
     const greet = hour < 5 ? '夜深了' : hour < 12 ? '早安' : hour < 18 ? '午安' : '晚安';
     $('#topActions').innerHTML = `
       <button type="button" class="search-pill" data-action="search" title="搜尋記錄（Ctrl+K）">${icon('search')}<span>搜尋記錄</span><kbd>Ctrl K</kbd></button>
+      ${Sync && Sync.enabled ? '<button type="button" class="round-btn sync-btn" id="syncBtn" data-action="sync"></button>' : ''}
       <button type="button" class="round-btn" data-action="backup" title="${bk.stale ? (bk.days == null ? '還沒有備份過，建議下載備份' : `已 ${bk.days} 天沒有備份`) : '下載備份'}" aria-label="下載備份">${icon('download')}${bk.stale ? '<span class="dot-badge is-dot"></span>' : ''}</button>
       <button type="button" class="btn btn-primary" data-action="new-record">${icon('plus')}<span class="btn-label">新增記錄</span></button>
       <div class="me" title="今天所有啟用帳號的淨變化"><span class="me-avatar">${esc(Array.from(Store.state.settings.currencyName || '幣')[0])}</span><span><small>${greet}</small><b>今日 ${done ? fmtSigned(todayNet) : '—'}</b></span></div>`;
@@ -383,6 +417,7 @@
       ${n.id === 'entry' && pending ? `<span class="nav-badge" title="今天尚未記錄的帳號">${pending}</span>` : ''}</a>`;
     $('#nav').innerHTML = NAV.map((n) => item(n, 'nav-item')).join('');
     $('#tabbar').innerHTML = NAV.map((n) => item(n, 'tab')).join('');
+    updateSyncIndicator();
     $('#railFoot').innerHTML = `<button type="button" class="rail-btn" data-action="toggle-rail" data-label="${ui.railOpen ? '收合選單' : '展開選單'}" aria-label="${ui.railOpen ? '收合選單' : '展開選單'}">${icon('sidebar')}<span class="nav-label">收合選單</span></button>`;
   }
 
@@ -1683,6 +1718,20 @@
           </form>
         </section>
 
+        ${window.GCTAuth && window.GCTAuth.enabled ? (() => {
+          const s = window.GCTAuth.session();
+          return `<section class="card">
+            <header class="card-head"><div><h3>Google 帳號與雲端同步</h3><p class="card-sub">資料存在你的 Google 雲端硬碟（App 專用隱藏資料夾），手機和電腦登入同一個帳號就會看到同一份</p></div></header>
+            <div class="sync-status" id="syncStatusBox"></div>
+            <div class="action-list">
+              <div class="action-item"><div><b>立即同步</b><small>平常存檔後會自動同步；打開 App、回到畫面、重新連上網路時也會同步。</small></div>
+                <div class="btn-pair"><button type="button" class="btn btn-sm btn-primary" id="syncAuthBtn" hidden>重新登入 Google</button><button type="button" class="btn btn-sm" data-action="sync">${icon('refresh')}同步</button></div></div>
+              <div class="action-item"><div><b>${esc(s ? s.email : '—')}</b><small>${s ? `登入有效到 ${fmtDate(D.toISO(new Date(s.exp)))}，到期後需再登入一次` : ''}</small></div>
+                <button type="button" class="btn btn-sm" id="logoutBtn">登出</button></div>
+            </div>
+          </section>`;
+        })() : ''}
+
         <section class="card">
           <header class="card-head"><div><h3>安裝到手機</h3><p class="card-sub">${isStandalone() ? '目前是從主畫面以 App 模式開啟 ✓' : '目前是在瀏覽器中開啟'}</p></div></header>
           ${canInstall() && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)
@@ -1738,6 +1787,13 @@
       safely(() => { Store.updateSettings({ currencyName: v }); toast(`貨幣名稱已改為「${v}」`); });
     });
     $('#restoreBtn', view).addEventListener('click', restoreFlow);
+    const logoutBtn = $('#logoutBtn', view);
+    if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+      if (await confirmDialog({ title: '登出', message: '登出後要再用 Google 登入才能使用。這台裝置和雲端的資料都不會被刪除。', confirmText: '登出' })) window.GCTAuth.logout();
+    });
+    const syncAuthBtn = $('#syncAuthBtn', view);
+    if (syncAuthBtn) syncAuthBtn.addEventListener('click', () => window.GCTAuth.reconnect());
+    updateSyncIndicator();
     const copyUrl = $('#copyUrl', view);
     if (copyUrl) copyUrl.addEventListener('click', () => {
       const url = location.origin + location.pathname;
@@ -1922,6 +1978,16 @@
       case 'import-csv': importCsvFlow(); break;
       case 'demo': loadDemo(); break;
       case 'search': focusRecordSearch(); break;
+      case 'sync':
+        if (!Sync) break;
+        if (Sync.status === 'auth') { window.GCTAuth.reconnect(); break; }
+        if (!navigator.onLine) { toast('目前沒有網路，連線後會自動同步', 'info'); break; }
+        Sync.syncNow().then(() => {
+          if (Sync.status === 'ok') toast('已和雲端同步');
+          else if (Sync.status === 'auth') toast('需要重新登入 Google 才能同步', 'info');
+          else if (Sync.status === 'error') toast(`同步失敗：${Sync.message}`, 'error');
+        });
+        break;
       case 'hide-install':
         ui.installHintHidden = true; saveUI();
         $$('.install-hint').forEach((el) => el.remove());
@@ -1936,7 +2002,13 @@
     }
   });
 
-  Store.onChange(() => { leaveGuard = null; const enter = nextRenderEnter; nextRenderEnter = false; render(enter); });
+  Store.onChange((source) => {
+    // 同步帶進新資料時，如果每日錄入頁還有沒存的輸入，先不重畫，免得輸入被清掉
+    if (source === 'sync' && leaveGuard && leaveGuard()) { toast('雲端有新資料，儲存後就會一起顯示', 'info'); return; }
+    leaveGuard = null;
+    const enter = nextRenderEnter; nextRenderEnter = false;
+    render(enter);
+  });
   // 同時開多個分頁時，其他分頁存檔後這裡跟著更新，避免舊資料把新資料蓋掉
   window.addEventListener('storage', (e) => {
     if (e.key !== 'gct:data:v1') return;
@@ -1945,7 +2017,11 @@
     render(false);
     toast('資料已在其他分頁更新', 'info');
   });
-  Store.load();
+  // 有設定 Google 登入時，登入完成才載入資料與畫面
   syncThemeColor();
-  render(true);
+  (window.GCTAuth ? window.GCTAuth.ready : Promise.resolve(null)).then(() => {
+    Store.load();
+    render(true);
+    if (Sync) Sync.start();
+  });
 })();
