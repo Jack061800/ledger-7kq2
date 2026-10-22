@@ -22,6 +22,7 @@
   const NONCE_KEY = 'gct:auth:nonce';
   const BACK_KEY = 'gct:auth:back';
   const SILENT_KEY = 'gct:auth:silentAt';
+  const NO_DRIVE_KEY = 'gct:auth:noDrive';
   const enabled = !!CONFIG.clientId && CONFIG.hosts.includes(location.hostname);
   const redirectUri = location.origin + location.pathname.replace(/index\.html$/, '');
 
@@ -84,6 +85,11 @@
     const granted = String(p.get('scope') || '');
     if (token && (!granted || granted.includes('drive.appdata'))) {
       localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, exp: Date.now() + (Number(p.get('expires_in')) || 3600) * 1000 }));
+      localStorage.removeItem(NO_DRIVE_KEY);
+    } else {
+      // Google 同意畫面上「雲端硬碟」那一項沒有勾選：登入成功，但不能同步
+      clearToken();
+      localStorage.setItem(NO_DRIVE_KEY, '1');
     }
     return { session };
   }
@@ -148,7 +154,7 @@
       return new Promise(() => {}); // 尚未登入：停在登入畫面
     }
     // 已登入但雲端權杖過期：有網路就先悄悄向 Google 換一張新的（不用再點帳號）
-    if (!getToken() && navigator.onLine && !(r && r.silentFailed)) {
+    if (!getToken() && navigator.onLine && !(r && r.silentFailed) && !localStorage.getItem(NO_DRIVE_KEY)) {
       const last = Number(localStorage.getItem(SILENT_KEY) || 0);
       if (Date.now() - last > 2 * 60 * 1000) {
         localStorage.setItem(SILENT_KEY, String(Date.now()));
@@ -167,6 +173,7 @@
 
   global.GCTAuth = {
     ready, enabled, logout, getToken, clearToken,
+    driveDenied: () => !!localStorage.getItem(NO_DRIVE_KEY),
     session: readSession,
     reconnect: () => startLogin(),
     sessionDays: CONFIG.sessionDays,

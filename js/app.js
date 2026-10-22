@@ -363,13 +363,13 @@
       const st = Sync.status;
       btn.className = `round-btn sync-btn is-${st}`;
       btn.innerHTML = `${icon(st === 'offline' || st === 'auth' || st === 'error' ? 'cloudOff' : st === 'syncing' ? 'refresh' : 'cloud')}${st === 'auth' || st === 'error' ? '<span class="dot-badge is-dot"></span>' : ''}`;
-      const tip = `${SYNC_TEXT[st] || ''}${Sync.message && st === 'error' ? `：${Sync.message}` : ''}（${syncAgo()}）`;
+      const tip = Sync.message && (st === 'error' || st === 'auth') ? Sync.message : `${SYNC_TEXT[st] || ''}（${syncAgo()}）`;
       btn.title = tip;
       btn.setAttribute('aria-label', tip);
     }
     const box = $('#syncStatusBox');
     if (box && Sync) {
-      box.innerHTML = `<span class="sync-dot is-${Sync.status}"></span><b>${SYNC_TEXT[Sync.status] || ''}</b><small>${esc(Sync.status === 'error' ? Sync.message : syncAgo())}</small>`;
+      box.innerHTML = `<span class="sync-dot is-${Sync.status}"></span><b>${SYNC_TEXT[Sync.status] || ''}</b><small>${esc(Sync.status === 'error' || Sync.status === 'auth' ? Sync.message : syncAgo())}</small>`;
       const again = $('#syncAuthBtn');
       if (again) again.hidden = Sync.status !== 'auth';
     }

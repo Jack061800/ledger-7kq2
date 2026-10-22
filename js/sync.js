@@ -91,7 +91,12 @@
   async function syncNow() {
     if (!Sync.enabled) { setStatus('off'); return; }
     if (!navigator.onLine) { setStatus('offline'); return; }
-    if (!Auth.getToken()) { setStatus('auth', '需要重新登入 Google 才能同步'); return; }
+    if (!Auth.getToken()) {
+      setStatus('auth', Auth.driveDenied && Auth.driveDenied()
+        ? '登入時沒有勾選「Google 雲端硬碟」權限。請按「重新登入 Google」，在權限清單把雲端硬碟那一項打勾。'
+        : '需要重新登入 Google 才能同步');
+      return;
+    }
     if (running) { again = true; return; }
     running = true;
     setStatus('syncing');
