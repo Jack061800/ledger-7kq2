@@ -1,0 +1,21 @@
+{
+  "name": "貨幣帳本",
+  "short_name": "貨幣帳本",
+  "description": "記錄多個遊戲帳號每天的貨幣餘額，比較各帳號收益。",
+  "lang": "zh-Hant",
+  "start_url": "./#/entry",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1412",
+  "theme_color": "#0f1412",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "每日錄入", "url": "./#/entry", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "總覽", "url": "./#/dashboard", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
