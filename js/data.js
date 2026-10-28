@@ -58,7 +58,8 @@
   // deleted：刪除紀錄（墓碑），跨裝置同步時用來避免已刪除的資料又被另一台裝置帶回來
   //   k = 'a:<帳號id>' 或 'r:<帳號id>|<日期>'，at = 刪除時間
   function emptyState() {
-    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, updatedAt: null }, accounts: [], records: [], deleted: [] };
+    // salesDay：Sales 算在哪一天。'prev' = 前一天（今天記的 CF Bal 減昨天的，就是昨天賺的）；'same' = 記錄當天
+    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, salesDay: 'prev', updatedAt: null }, accounts: [], records: [], deleted: [] };
   }
 
   const nowISO = () => new Date().toISOString();
@@ -82,6 +83,7 @@
       if (obj.settings.lastBackupAt) state.settings.lastBackupAt = String(obj.settings.lastBackupAt);
       if (Number.isInteger(obj.settings.monthlyGoal) && obj.settings.monthlyGoal > 0) state.settings.monthlyGoal = obj.settings.monthlyGoal;
       if (obj.settings.updatedAt) state.settings.updatedAt = String(obj.settings.updatedAt);
+      if (obj.settings.salesDay === 'same') state.settings.salesDay = 'same';
     }
     if (Array.isArray(obj.deleted)) state.deleted = pruneTombs(obj.deleted.map((t) => ({ k: String(t && t.k || ''), at: String(t && t.at || '') })));
     const ids = new Set();
@@ -119,6 +121,8 @@
         accountId: String(r.accountId),
         date: r.date,
         balance: r.balance,
+        shipped: optInt(r.shipped, where),
+        // 舊版欄位（取得／使用），保留不刪，畫面上已不再使用
         gained: optInt(r.gained, where),
         spent: optInt(r.spent, where),
         note: String(r.note || ''),
@@ -179,12 +183,17 @@
   }
 
   /* ---------- 衍生計算 ----------
-   * 每筆記錄：
-   *   net      每日淨變化 = 當日餘額 − 同帳號前一次（較早日期）記錄的餘額；首筆為 null
-   *   gap      與前一次記錄相隔天數（>1 代表中間有未記錄的日期，net 是多天合計）
-   *   recorded 記錄收益 = 取得量 − 使用量（只要填了其中一欄就計算，未填的一欄視為 0）
-   *   diff     差異 = net − recorded（兩者都有值時）
+   * 每筆記錄（balance = 當天輸入的 CF Bal，也就是 Stock 庫存）：
+   *   net       庫存變化 = 這次 CF Bal − 同帳號前一次記錄的 CF Bal；首筆為 null
+   *   shipped   這次記錄的出貨量（出貨會讓庫存變少，但不算少賺）
+   *   sales     賺到的 = 庫存變化 + 出貨；首筆沒有前一次可比，為 null
+   *   salesDate Sales 算在哪一天：預設是記錄日的前一天（今天的 CF Bal − 昨天的 = 昨天賺的）
+   *   gap       與前一次記錄相隔天數（>1 代表中間有沒記錄的日子，sales 是那幾天的合計）
+   *   negative  sales 是負數（庫存少掉的比出貨還多，可能漏記出貨）
    */
+  function salesDateOf(date, settings) {
+    return settings && settings.salesDay === 'same' ? date : addDays(date, -1);
+  }
   function derive(state) {
     const byAccount = new Map();
     const byId = new Map();
@@ -196,11 +205,13 @@
       list.forEach((r) => {
         const net = prev ? r.balance - prev.balance : null;
         const gap = prev ? daysBetween(prev.date, r.date) : null;
-        const recorded = r.gained == null && r.spent == null ? null : (r.gained || 0) - (r.spent || 0);
-        const diff = net != null && recorded != null ? net - recorded : null;
-        const mismatch = diff != null && diff !== 0;
-        // strict：與前一天相連卻對不上，最需要檢查；跨多天的差異可能來自未記錄的日期
-        byId.set(r.id, { record: r, prev, net, gap, recorded, diff, mismatch, strict: mismatch && gap === 1 });
+        const shipped = r.shipped || 0;
+        const sales = net == null ? null : net + shipped;
+        byId.set(r.id, {
+          record: r, prev, net, gap, shipped, sales,
+          salesDate: salesDateOf(r.date, state.settings),
+          negative: sales != null && sales < 0,
+        });
         prev = r;
       });
     });
@@ -337,7 +348,7 @@
       const date = normalizeDate(input.date);
       if (!date) errors.date = '請選擇有效日期'; else value.date = date;
       if (!input.accountId || !this.account(input.accountId)) errors.accountId = '請選擇帳號'; else value.accountId = input.accountId;
-      [['balance', true], ['gained', false], ['spent', false]].forEach(([k, required]) => {
+      [['balance', true], ['shipped', false]].forEach(([k, required]) => {
         const r = parseAmount(input[k], { required });
         if (r.error) errors[k] = r.error; else value[k] = r.value;
       });
@@ -475,28 +486,28 @@
       return list.find((r) => r.date > date) || null;
     },
 
-    /* 某帳號在 [start, end] 期間的統計
-     *   net     期間內每筆記錄淨變化的總和（= 期間最後餘額 − 期間開始前最後一筆餘額）
-     *   covered 這些淨變化涵蓋的天數（各記錄 gap 的總和）
-     *   avg     每日平均 = net ÷ covered
-     *   recorded 期間內記錄收益（取得 − 使用）的總和
+    /* 某帳號在 [start, end] 期間的統計（依 Sales 歸屬日 salesDate 判斷是否在期間內）
+     *   sales    期間內 Sales 總和（庫存變化 + 出貨）
+     *   shipped  期間內出貨總和
+     *   covered  這些 Sales 涵蓋的天數（各記錄 gap 的總和）
+     *   avg      每日平均 Sales = sales ÷ covered
+     *   negatives Sales 為負數的筆數（可能漏記出貨）
      */
     windowStats(accountId, start, end) {
       const d = Store.derived();
-      let net = 0; let netCount = 0; let covered = 0; let recorded = 0; let recordedCount = 0; let mismatch = 0; let days = 0;
+      let sales = 0; let salesCount = 0; let covered = 0; let shipped = 0; let shippedCount = 0; let negatives = 0; let days = 0;
       this.list(accountId).forEach((r) => {
-        if (r.date < start || r.date > end) return;
         const x = d.byId.get(r.id);
+        if (x.salesDate < start || x.salesDate > end) return;
         days++;
-        if (x.net != null) { net += x.net; netCount++; covered += x.gap; }
-        if (x.recorded != null) { recorded += x.recorded; recordedCount++; }
-        if (x.strict) mismatch++;
+        if (x.sales != null) { sales += x.sales; salesCount++; covered += x.gap; }
+        if (r.shipped) { shipped += r.shipped; shippedCount++; }
+        if (x.negative) negatives++;
       });
       return {
-        days, netCount, covered, recordedCount, mismatch,
-        net: netCount ? net : null,
-        avg: covered ? net / covered : null,
-        recorded: recordedCount ? recorded : null,
+        days, salesCount, covered, shippedCount, negatives, shipped,
+        sales: salesCount ? sales : null,
+        avg: covered ? sales / covered : null,
       };
     },
 
@@ -514,38 +525,32 @@
       });
     },
 
-    // 每日淨變化序列（沒有記錄的日期為 null，不當作 0）
-    dailyNet(accountId, dates) {
-      const map = new Map(this.list(accountId).map((r) => [r.date, this.info(r.id)]));
+    // 每日 Sales 序列（依歸屬日；沒有記錄的日子為 null，不當作 0）
+    dailySales(accountId, dates) {
+      const map = new Map(this.list(accountId).map((r) => { const x = this.info(r.id); return [x.salesDate, x]; }));
       return dates.map((d) => map.get(d) || null);
     },
 
-    // 累計淨變化：該日（或之前最近一筆）餘額 − 期間開始前最後一筆餘額
-    cumulative(accountId, dates) {
-      const list = this.list(accountId);
-      if (!dates.length) return [];
-      const start = dates[0]; const end = dates[dates.length - 1];
-      const base = this.latestBefore(list, start) || list.find((r) => r.date >= start && r.date <= end) || null;
-      if (!base) return dates.map(() => null);
-      let p = -1;
-      return dates.map((date) => {
-        while (p + 1 < list.length && list[p + 1].date <= date) p++;
-        if (p < 0 || list[p].date < base.date) return null;
-        return list[p].balance - base.balance;
+    // 累計 Sales：從期間第一天開始把每日 Sales 加起來；第一筆 Sales 出現前為 null
+    cumulativeSales(accountId, dates) {
+      const daily = this.dailySales(accountId, dates);
+      let sum = null;
+      return daily.map((x) => {
+        if (x && x.sales != null) sum = (sum || 0) + x.sales;
+        return sum;
       });
     },
   };
 
   /* ---------- CSV ---------- */
-  const CSV_COLUMNS = ['date', 'account', 'game_id', 'balance', 'gained', 'spent', 'note'];
-  const CSV_COMPUTED = ['net_change', 'recorded_profit', 'difference'];
+  const CSV_COLUMNS = ['date', 'account', 'game_id', 'cf_bal', 'shipped', 'note'];
+  const CSV_COMPUTED = ['stock_change', 'sales', 'sales_date', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
   const ALIASES = {
     date: ['date', '日期'],
     account: ['account', 'account_name', 'name', '帳號', '帳號名稱', '账号'],
     game_id: ['game_id', 'gameid', 'game id', '遊戲內id', '遊戲id', '遊戲內 id'],
-    balance: ['balance', '餘額', '當日餘額', '余额'],
-    gained: ['gained', 'gain', 'income', '取得', '取得量', '當日取得量'],
-    spent: ['spent', 'spend', 'expense', '使用', '使用量', '當日使用量'],
+    balance: ['cf_bal', 'cf bal', 'cfbal', 'cf', 'balance', 'stock', '餘額', '當日餘額', '余额', '庫存', '库存'],
+    shipped: ['shipped', 'ship', 'shipment', '出貨', '出货', '出貨量', '出货量'],
     note: ['note', 'notes', 'memo', '備註', '备注'],
   };
 
@@ -591,18 +596,18 @@
 
     exportRecords(records) {
       const d = Store.derived();
-      const rows = [CSV_COLUMNS.concat(CSV_COMPUTED)];
+      const rows = [CSV_COLUMNS.concat(['stock_change', 'sales', 'sales_date'])];
       records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach((r) => {
         const a = Store.account(r.accountId);
         const x = d.byId.get(r.id) || {};
-        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.gained, r.spent, r.note, x.net, x.recorded, x.diff]);
+        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.shipped, r.note, x.net, x.sales, x.salesDate]);
       });
       return CSV.stringify(rows);
     },
 
     template() {
       const today = todayISO();
-      return CSV.stringify([CSV_COLUMNS, [today, '主帳號', 'TW-000001', 12345, 1500, 300, '範例：可刪除此列']]);
+      return CSV.stringify([CSV_COLUMNS, [today, '主帳號', 'TW-000001', 12345, 3000, '範例：可刪除此列']]);
     },
 
     // 匯入前檢查：欄位、格式、帳號對應、與既有資料及檔案內的重複
@@ -618,7 +623,7 @@
       });
       const missing = [];
       if (col.date == null) missing.push('date（日期）');
-      if (col.balance == null) missing.push('balance（餘額）');
+      if (col.balance == null) missing.push('cf_bal（CF Bal）');
       if (col.account == null && col.game_id == null) missing.push('account（帳號名稱）或 game_id（遊戲內 ID）');
       if (missing.length) return { fatal: `缺少必要欄位：${missing.join('、')}`, header: rows[0] };
       if (rows.length < 2) return { fatal: '檔案只有標題列，沒有資料' };
@@ -638,11 +643,9 @@
         const date = normalizeDate(get('date'));
         if (!date) errors.push(`日期「${get('date')}」格式錯誤（應為 YYYY-MM-DD）`);
         const bal = parseAmount(get('balance'), { required: true });
-        if (bal.error) errors.push(`餘額：${bal.error}`);
-        const g = parseAmount(get('gained'));
-        if (g.error) errors.push(`取得量：${g.error}`);
-        const sp = parseAmount(get('spent'));
-        if (sp.error) errors.push(`使用量：${sp.error}`);
+        if (bal.error) errors.push(`CF Bal：${bal.error}`);
+        const sh = parseAmount(get('shipped'));
+        if (sh.error) errors.push(`出貨：${sh.error}`);
 
         const name = get('account'); const gid = get('game_id');
         let account = null; let acctKey = null; let newName = null;
@@ -671,7 +674,7 @@
           line, status, errors, acctKey, existing,
           accountName: account ? account.name : newName,
           isNewAccount: !account && !!newName,
-          value: { date, balance: bal.value, gained: g.value == null ? null : g.value, spent: sp.value == null ? null : sp.value, note: get('note').slice(0, 200) },
+          value: { date, balance: bal.value, shipped: sh.value == null ? null : sh.value, note: get('note').slice(0, 200) },
         });
       }
       // 只保留實際會用到的新帳號
@@ -707,25 +710,23 @@
       const acc = { id: uid('a') + i, name: def.name, gameId: def.gameId, note: def.note, status: def.status, colorIndex: i, createdAt: new Date().toISOString() };
       s.accounts.push(acc);
       let bal = def.start;
+      let pendingShip = 0; // 上次記錄後累積的出貨，記在下一筆
       for (let k = 89; k >= 0; k--) {
         const date = addDays(today, -k);
-        const gained = Math.round((def.rate * (0.4 + rand() * 1.2)) / 10) * 10;
-        const spent = rand() < 0.3 ? Math.round((def.rate * rand() * 1.6) / 10) * 10 : 0;
-        let realDelta = gained - spent;
-        const injectMismatch = rand() < 0.04;
-        if (injectMismatch) realDelta += 200;
-        bal = Math.max(0, bal + realDelta);
+        const earned = Math.round((def.rate * (0.4 + rand() * 1.2)) / 10) * 10;
+        const ship = rand() < 0.18 && bal > def.rate * 4 ? Math.round((bal * (0.2 + rand() * 0.3)) / 100) * 100 : 0;
+        bal = Math.max(0, bal + earned - ship);
+        pendingShip += ship;
         if (def.status === 'inactive' && k < 40) continue;
         if (k === 0 && i >= 2) continue; // 今天還沒記錄的帳號，用來展示提醒
         if (k > 0 && rand() < def.skip) continue; // 缺漏日期
-        const detailed = rand() < 0.85;
         s.records.push({
           id: uid('r') + i + '_' + k, accountId: acc.id, date, balance: bal,
-          gained: detailed ? gained : null,
-          spent: detailed ? spent : null,
-          note: injectMismatch ? '有一筆交易忘了記' : '',
+          shipped: pendingShip || null,
+          note: pendingShip ? '出貨給客人' : '',
           updatedAt: new Date().toISOString(),
         });
+        pendingShip = 0;
       }
     });
     return s;
