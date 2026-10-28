@@ -84,7 +84,7 @@
   }
 
   // 只比較資料本身（不含每台裝置自己的備份時間）
-  const fingerprint = (s) => JSON.stringify({ a: s.accounts, r: s.records, d: s.deleted, s: { ...s.settings, lastBackupAt: null } });
+  const fingerprint = (s) => JSON.stringify({ a: s.accounts, r: s.records, h: s.shipments || [], d: s.deleted, s: { ...s.settings, lastBackupAt: null } });
 
   let running = false; let again = false; let timer = null;
 

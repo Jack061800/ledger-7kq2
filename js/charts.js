@@ -5,7 +5,16 @@
 
   const NS = 'http://www.w3.org/2000/svg';
   const observers = new Set();
-  const compact = new Intl.NumberFormat('zh-TW', { notation: 'compact', maximumFractionDigits: 1 });
+  // 軸上的數字：1 億起用 M／B（100M、1.5B），以下維持「萬」
+  const zhCompact = new Intl.NumberFormat('zh-TW', { notation: 'compact', maximumFractionDigits: 1 });
+  const compact = {
+    format(v) {
+      const a = Math.abs(v); const sign = v < 0 ? '-' : '';
+      if (a >= 1e9) return `${sign}${+(a / 1e9).toFixed(1)}B`;
+      if (a >= 1e8) return `${sign}${+(a / 1e6).toFixed(0)}M`;
+      return zhCompact.format(v);
+    },
+  };
   const reduceMotion = () => global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches;
   let gid = 0;
 
@@ -235,5 +244,5 @@
     observers.clear();
   }
 
-  global.GCTCharts = { lineChart, sparkline, donut, cleanup, shortDate };
+  global.GCTCharts = { lineChart, sparkline, donut, cleanup, shortDate, compact: (v) => compact.format(v) };
 })(window);

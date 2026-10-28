@@ -1,6 +1,6 @@
 /* 遊戲貨幣追蹤：資料層（儲存、驗證、計算、CSV）
  * 所有資料存在瀏覽器 localStorage，結構：
- * { version, settings: { currencyName, lastBackupAt }, accounts: [...], records: [...] }
+ * { version, settings: { currencyName, lastBackupAt, ... }, accounts: [...], records: [...], shipments: [...], deleted: [...] }
  */
 (function (global) {
   'use strict';
@@ -39,10 +39,19 @@
   /* ---------- 數字 ---------- */
   const toHalfWidth = (s) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[－−]/g, '-');
 
-  // 解析非負整數，允許千分位逗號；回傳 { value } 或 { error }
+  // 解析非負整數，允許千分位逗號，也接受 20k、100m、1.5b 這種簡寫；回傳 { value } 或 { error }
+  const UNITS = { k: 1e3, m: 1e6, b: 1e9 };
   function parseAmount(raw, { required = false } = {}) {
     const s = toHalfWidth(String(raw == null ? '' : raw)).trim().replace(/[,\s，_]/g, '');
     if (s === '') return required ? { error: '必填' } : { value: null };
+    const u = s.match(/^(\d+(?:\.\d+)?|\.\d+)([kmb])$/i);
+    if (u) {
+      const x = Number(u[1]) * UNITS[u[2].toLowerCase()];
+      const n = Math.round(x);
+      if (Math.abs(x - n) > 1e-6) return { error: '換算後不是整數，請多打幾位數' };
+      if (n > MAX_AMOUNT) return { error: '數字過大' };
+      return { value: n };
+    }
     if (/^[+-]?\d*\.\d+$/.test(s)) return { error: '請輸入整數，不可有小數' };
     if (!/^[+-]?\d+$/.test(s)) return { error: '只能輸入數字' };
     const n = Number(s);
@@ -56,10 +65,11 @@
 
   /* ---------- 狀態 ---------- */
   // deleted：刪除紀錄（墓碑），跨裝置同步時用來避免已刪除的資料又被另一台裝置帶回來
-  //   k = 'a:<帳號id>' 或 'r:<帳號id>|<日期>'，at = 刪除時間
+  //   k = 'a:<帳號id>'、'r:<帳號id>|<日期>' 或 's:<出貨id>'，at = 刪除時間
+  // shipments：每一筆出貨（日期、帳號、數量），和每天的 CF Bal 記錄分開記
   function emptyState() {
     // salesDay：Sales 算在哪一天。'prev' = 前一天（今天記的 CF Bal 減昨天的，就是昨天賺的）；'same' = 記錄當天
-    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, salesDay: 'prev', updatedAt: null }, accounts: [], records: [], deleted: [] };
+    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, salesDay: 'prev', updatedAt: null }, accounts: [], records: [], shipments: [], deleted: [] };
   }
 
   const nowISO = () => new Date().toISOString();
@@ -129,6 +139,22 @@
         updatedAt: r.updatedAt || new Date().toISOString(),
       });
     });
+    const shipIds = new Set();
+    (Array.isArray(obj.shipments) ? obj.shipments : []).forEach((x, i) => {
+      const where = `第 ${i + 1} 筆出貨`;
+      if (!x || !ids.has(String(x.accountId))) throw new Error(`${where}對應的帳號不存在`);
+      if (!isISODate(x.date)) throw new Error(`${where}日期格式錯誤`);
+      if (!Number.isInteger(x.amount) || x.amount <= 0) throw new Error(`${where}數量不是正整數`);
+      const id = String(x.id || uid('s'));
+      if (shipIds.has(id)) return;
+      shipIds.add(id);
+      state.shipments.push({
+        id, accountId: String(x.accountId), date: x.date, amount: x.amount,
+        note: String(x.note || ''),
+        createdAt: x.createdAt || x.updatedAt || new Date().toISOString(),
+        updatedAt: x.updatedAt || new Date().toISOString(),
+      });
+    });
     return state;
   }
 
@@ -174,48 +200,77 @@
       .filter((r) => !(tombAt.get('r:' + recKey(r)) >= (r.updatedAt || '')))
       .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : x.accountId < y.accountId ? -1 : 1));
 
+    const shipById = new Map();
+    [...(a.shipments || []), ...(b.shipments || [])].forEach((s0) => {
+      const s = remap.has(s0.accountId) ? { ...s0, accountId: remap.get(s0.accountId) } : s0;
+      if (!alive.has(s.accountId) || tombAt.get('s:' + s.id) >= (s.updatedAt || '')) return;
+      const cur = shipById.get(s.id);
+      shipById.set(s.id, cur ? newer(cur, s) : s);
+    });
+    const shipments = Array.from(shipById.values()).sort(byShipOrder);
+
     const sa = a.settings || {}; const sb = b.settings || {};
     const settings = { ...((sa.updatedAt || '') >= (sb.updatedAt || '') ? sa : sb) };
     const backups = [sa.lastBackupAt, sb.lastBackupAt].filter(Boolean).sort();
     settings.lastBackupAt = backups.length ? backups[backups.length - 1] : null;
 
-    return { version: SCHEMA_VERSION, settings, accounts, records, deleted: tombs };
+    return { version: SCHEMA_VERSION, settings, accounts, records, shipments, deleted: tombs };
   }
+
+  const byShipOrder = (x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : (x.createdAt || '') < (y.createdAt || '') ? -1 : 1);
 
   /* ---------- 衍生計算 ----------
    * 每筆記錄（balance = 當天輸入的 CF Bal，也就是 Stock 庫存）：
    *   net       庫存變化 = 這次 CF Bal − 同帳號前一次記錄的 CF Bal；首筆為 null
-   *   shipped   這次記錄的出貨量（出貨會讓庫存變少，但不算少賺）
+   *   shipped   這段期間的出貨量（出貨會讓庫存變少，但不算少賺）
+   *             = 這段期間的出貨記錄（shipments）＋ 記錄上直接填的出貨（舊版／CSV 匯入）
    *   sales     賺到的 = 庫存變化 + 出貨；首筆沒有前一次可比，為 null
    *   salesDate Sales 算在哪一天：預設是記錄日的前一天（今天的 CF Bal − 昨天的 = 昨天賺的）
    *   gap       與前一次記錄相隔天數（>1 代表中間有沒記錄的日子，sales 是那幾天的合計）
    *   negative  sales 是負數（庫存少掉的比出貨還多，可能漏記出貨）
+   *
+   * 出貨記錄算進哪一筆 CF Bal：
+   *   'prev'（早上記 CF Bal）：出貨日 ≥ 上次記錄日、且 < 這次記錄日 → 今天出的貨，明天記 CF Bal 時算進今天的 Sales
+   *   'same'（晚上記 CF Bal）：出貨日 > 上次記錄日、且 ≤ 這次記錄日
+   *   還沒有下一次 CF Bal 的出貨先放在 pending，記了之後才算進 Sales
    */
   function salesDateOf(date, settings) {
     return settings && settings.salesDay === 'same' ? date : addDays(date, -1);
   }
+  function shipBelongs(shipDate, prevDate, recDate, settings) {
+    if (settings && settings.salesDay === 'same') return (prevDate == null || shipDate > prevDate) && shipDate <= recDate;
+    return (prevDate == null || shipDate >= prevDate) && shipDate < recDate;
+  }
   function derive(state) {
     const byAccount = new Map();
     const byId = new Map();
-    state.accounts.forEach((a) => byAccount.set(a.id, []));
+    const shipsByAccount = new Map();
+    const pending = new Map();
+    state.accounts.forEach((a) => { byAccount.set(a.id, []); shipsByAccount.set(a.id, []); });
     state.records.forEach((r) => { const list = byAccount.get(r.accountId); if (list) list.push(r); });
-    byAccount.forEach((list) => {
+    (state.shipments || []).forEach((s) => { const list = shipsByAccount.get(s.accountId); if (list) list.push(s); });
+    byAccount.forEach((list, accountId) => {
       list.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+      const ships = shipsByAccount.get(accountId).sort(byShipOrder);
+      const used = new Set();
       let prev = null;
       list.forEach((r) => {
         const net = prev ? r.balance - prev.balance : null;
         const gap = prev ? daysBetween(prev.date, r.date) : null;
-        const shipped = r.shipped || 0;
+        const shipList = ships.filter((s) => !used.has(s) && shipBelongs(s.date, prev ? prev.date : null, r.date, state.settings));
+        shipList.forEach((s) => used.add(s));
+        const shipped = (r.shipped || 0) + shipList.reduce((t, s) => t + s.amount, 0);
         const sales = net == null ? null : net + shipped;
         byId.set(r.id, {
-          record: r, prev, net, gap, shipped, sales,
+          record: r, prev, net, gap, shipped, shipList, sales,
           salesDate: salesDateOf(r.date, state.settings),
           negative: sales != null && sales < 0,
         });
         prev = r;
       });
+      pending.set(accountId, ships.filter((s) => !used.has(s)));
     });
-    return { byAccount, byId };
+    return { byAccount, byId, shipsByAccount, pending };
   }
 
   /* ---------- Store ---------- */
@@ -333,7 +388,39 @@
       return this._commit((s) => {
         s.accounts = s.accounts.filter((a) => a.id !== id);
         s.records = s.records.filter((r) => r.accountId !== id);
+        s.shipments = (s.shipments || []).filter((x) => x.accountId !== id);
         this._tomb(s, 'a:' + id);
+      });
+    },
+
+    /* 出貨 */
+    validateShipment(input) {
+      const errors = {};
+      const value = {};
+      const date = normalizeDate(input.date);
+      if (!date) errors.date = '請選擇有效日期'; else value.date = date;
+      if (!input.accountId || !this.account(input.accountId)) errors.accountId = '請選擇帳號'; else value.accountId = input.accountId;
+      const r = parseAmount(input.amount, { required: true });
+      if (r.error) errors.amount = r.error;
+      else if (r.value <= 0) errors.amount = '出貨要大於 0';
+      else value.amount = r.value;
+      value.note = String(input.note || '').trim().slice(0, 200);
+      return { errors, value };
+    },
+    addShipment(input) {
+      const { errors, value } = this.validateShipment(input);
+      if (Object.keys(errors).length) throw fieldError(errors);
+      return this._commit((s) => {
+        const now = nowISO();
+        const ship = { id: uid('s'), ...value, createdAt: now, updatedAt: now };
+        (s.shipments = s.shipments || []).push(ship);
+        return ship;
+      });
+    },
+    deleteShipment(id) {
+      return this._commit((s) => {
+        s.shipments = (s.shipments || []).filter((x) => x.id !== id);
+        this._tomb(s, 's:' + id);
       });
     },
 
@@ -445,13 +532,17 @@
       const now = nowISO();
       const keepIds = new Set(next.accounts.map((a) => a.id));
       const keepKeys = new Set(next.records.map(recKey));
+      next.shipments = next.shipments || [];
+      const keepShips = new Set(next.shipments.map((x) => x.id));
       const tombs = [...(this.state.deleted || []), ...(next.deleted || [])];
       this.state.accounts.forEach((a) => { if (!keepIds.has(a.id)) tombs.push({ k: 'a:' + a.id, at: now }); });
       this.state.records.forEach((r) => { if (!keepKeys.has(recKey(r))) tombs.push({ k: 'r:' + recKey(r), at: now }); });
+      (this.state.shipments || []).forEach((x) => { if (!keepShips.has(x.id)) tombs.push({ k: 's:' + x.id, at: now }); });
       next.accounts.forEach((a) => { a.updatedAt = now; });
       next.records.forEach((r) => { r.updatedAt = now; });
+      next.shipments.forEach((x) => { x.updatedAt = now; });
       next.settings = { ...next.settings, updatedAt: now };
-      next.deleted = pruneTombs(tombs).filter((t) => !(t.k.startsWith('a:') && keepIds.has(t.k.slice(2))) && !(t.k.startsWith('r:') && keepKeys.has(t.k.slice(2))));
+      next.deleted = pruneTombs(tombs).filter((t) => !(t.k.startsWith('a:') && keepIds.has(t.k.slice(2))) && !(t.k.startsWith('r:') && keepKeys.has(t.k.slice(2))) && !(t.k.startsWith('s:') && keepShips.has(t.k.slice(2))));
       return next;
     },
     previousSnapshot() {
@@ -486,6 +577,15 @@
       return list.find((r) => r.date > date) || null;
     },
 
+    // 某帳號的全部出貨（依日期排序）、還沒算進 Sales 的出貨
+    shipments(accountId) { return Store.derived().shipsByAccount.get(accountId) || []; },
+    pendingShipments(accountId) { return Store.derived().pending.get(accountId) || []; },
+    // 如果在 date 記一筆 CF Bal，會算進哪些出貨（用在輸入時的即時試算）
+    shipmentsFor(accountId, date) {
+      const prev = this.latestBefore(this.list(accountId), date);
+      return this.shipments(accountId).filter((s) => shipBelongs(s.date, prev ? prev.date : null, date, Store.state.settings));
+    },
+
     /* 某帳號在 [start, end] 期間的統計（依 Sales 歸屬日 salesDate 判斷是否在期間內）
      *   sales    期間內 Sales 總和（庫存變化 + 出貨）
      *   shipped  期間內出貨總和
@@ -501,7 +601,7 @@
         if (x.salesDate < start || x.salesDate > end) return;
         days++;
         if (x.sales != null) { sales += x.sales; salesCount++; covered += x.gap; }
-        if (r.shipped) { shipped += r.shipped; shippedCount++; }
+        if (x.shipped) { shipped += x.shipped; shippedCount++; }
         if (x.negative) negatives++;
       });
       return {
@@ -544,7 +644,7 @@
 
   /* ---------- CSV ---------- */
   const CSV_COLUMNS = ['date', 'account', 'game_id', 'cf_bal', 'shipped', 'note'];
-  const CSV_COMPUTED = ['stock_change', 'sales', 'sales_date', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
+  const CSV_COMPUTED = ['shipped_total', 'stock_change', 'sales', 'sales_date', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
   const ALIASES = {
     date: ['date', '日期'],
     account: ['account', 'account_name', 'name', '帳號', '帳號名稱', '账号'],
@@ -596,11 +696,12 @@
 
     exportRecords(records) {
       const d = Store.derived();
-      const rows = [CSV_COLUMNS.concat(['stock_change', 'sales', 'sales_date'])];
+      // shipped = 記錄上直接填的出貨（匯入時會讀回）；shipped_total = 含出貨記錄的合計（只供參考，匯入時忽略）
+      const rows = [CSV_COLUMNS.concat(['shipped_total', 'stock_change', 'sales', 'sales_date'])];
       records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach((r) => {
         const a = Store.account(r.accountId);
         const x = d.byId.get(r.id) || {};
-        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.shipped, r.note, x.net, x.sales, x.salesDate]);
+        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.shipped, r.note, x.shipped, x.net, x.sales, x.salesDate]);
       });
       return CSV.stringify(rows);
     },
@@ -710,23 +811,18 @@
       const acc = { id: uid('a') + i, name: def.name, gameId: def.gameId, note: def.note, status: def.status, colorIndex: i, createdAt: new Date().toISOString() };
       s.accounts.push(acc);
       let bal = def.start;
-      let pendingShip = 0; // 上次記錄後累積的出貨，記在下一筆
+      // 每天早上記 CF Bal；當天白天賺、出貨，隔天的 CF Bal 才看得到
       for (let k = 89; k >= 0; k--) {
         const date = addDays(today, -k);
-        const earned = Math.round((def.rate * (0.4 + rand() * 1.2)) / 10) * 10;
-        const ship = rand() < 0.18 && bal > def.rate * 4 ? Math.round((bal * (0.2 + rand() * 0.3)) / 100) * 100 : 0;
-        bal = Math.max(0, bal + earned - ship);
-        pendingShip += ship;
+        const recorded = !(def.status === 'inactive' && k < 40) && !(k === 0 && i >= 2) && !(k > 0 && rand() < def.skip);
+        if (recorded) {
+          s.records.push({ id: uid('r') + i + '_' + k, accountId: acc.id, date, balance: bal, shipped: null, note: '', updatedAt: new Date().toISOString() });
+        }
         if (def.status === 'inactive' && k < 40) continue;
-        if (k === 0 && i >= 2) continue; // 今天還沒記錄的帳號，用來展示提醒
-        if (k > 0 && rand() < def.skip) continue; // 缺漏日期
-        s.records.push({
-          id: uid('r') + i + '_' + k, accountId: acc.id, date, balance: bal,
-          shipped: pendingShip || null,
-          note: pendingShip ? '出貨給客人' : '',
-          updatedAt: new Date().toISOString(),
-        });
-        pendingShip = 0;
+        const earned = Math.round((def.rate * (0.4 + rand() * 1.2)) / 10) * 10;
+        const ship = k > 0 && rand() < 0.18 && bal > def.rate * 4 ? Math.round((bal * (0.2 + rand() * 0.3)) / 100) * 100 : 0;
+        bal = Math.max(0, bal + earned - ship);
+        if (ship) s.shipments.push({ id: uid('s') + i + '_' + k, accountId: acc.id, date, amount: ship, note: '出貨給客人', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
       }
     });
     return s;

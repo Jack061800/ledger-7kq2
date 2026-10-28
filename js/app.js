@@ -10,11 +10,14 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const nf = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
-  const fmt = (n) => (n == null ? '—' : nf.format(Math.round(n)));
+  // 顯示用：1 億（100,000,000）起改成 100M，10 億起改成 1B；輸入框一律用 fmtFull 顯示完整數字
+  const fmtAbs = (a) => (a >= 1e9 ? `${+(a / 1e9).toFixed(2)}B` : a >= 1e8 ? `${+(a / 1e6).toFixed(2)}M` : nf.format(a));
+  const fmt = (n) => { if (n == null) return '—'; const r = Math.round(n); return r < 0 ? '-' + fmtAbs(-r) : fmtAbs(r); };
+  const fmtFull = (n) => (n == null ? '' : nf.format(Math.round(n)));
   const fmtSigned = (n) => {
     if (n == null) return '—';
     const r = Math.round(n);
-    return r > 0 ? '+' + nf.format(r) : r < 0 ? '−' + nf.format(-r) : '0';
+    return r > 0 ? '+' + fmtAbs(r) : r < 0 ? '−' + fmtAbs(-r) : '0';
   };
   const deltaClass = (n) => (n == null ? 'muted' : Math.round(n) > 0 ? 'pos' : Math.round(n) < 0 ? 'neg' : 'zero');
   const delta = (n, suffix = '') => `<span class="delta ${deltaClass(n)}">${fmtSigned(n)}${n == null ? '' : suffix}</span>`;
@@ -74,6 +77,7 @@
     cloud: '<path d="M7 18.5h10a4.5 4.5 0 0 0 .6-9 6 6 0 0 0-11.5 1.6A3.8 3.8 0 0 0 7 18.5Z"/>',
     cloudOff: '<path d="M7 18.5h10a4.5 4.5 0 0 0 .6-9 6 6 0 0 0-11.5 1.6A3.8 3.8 0 0 0 7 18.5Z"/><path d="M3 3l18 18"/>',
     refresh: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>',
+    ship: '<path d="M2.5 6.5h11v9.5h-11z"/><path d="M13.5 9.5h4l3 3.2v3.3h-7"/><circle cx="6.5" cy="17.8" r="1.7"/><circle cx="17" cy="17.8" r="1.7"/>',
     share: '<path d="M12 15V3"/><path d="m8 7 4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>',
   };
   const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -160,7 +164,7 @@
     const t = e.target;
     if (t && t.matches && t.matches('input.num')) {
       const r = parseAmount(t.value);
-      if (!r.error && r.value != null) t.value = fmt(r.value);
+      if (!r.error && r.value != null) t.value = fmtFull(r.value);
     }
   });
   // 點空白處關閉下拉
@@ -581,9 +585,10 @@
   function renderDashboard(view) {
     if (!Store.accounts().length) { view.innerHTML = noAccountsState(); return; }
     const today = D.todayISO();
-    $('#pageActions').innerHTML = `<a class="btn" href="#/analytics">${icon('analytics')}Sales 分析</a><a class="btn btn-ink" href="#/entry">${icon('entry')}每日錄入</a>`;
+    $('#pageActions').innerHTML = `<a class="btn" href="#/analytics">${icon('analytics')}Sales 分析</a>
+      <button type="button" class="btn btn-ship" data-action="ship">${icon('ship')}出貨</button>
+      <button type="button" class="btn btn-primary" data-action="cf">${icon('coin')}CF Bal</button>`;
     view.innerHTML = `
-      <section class="card quick-entry" id="quickEntry"></section>
       <section class="filterbar card-flat">
         <div class="seg" data-seg="dash-range" role="group" aria-label="日期範圍">
           ${[['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['custom', '自訂']].map(([v, l]) => `<button type="button" class="seg-btn ${ui.range === v ? 'active' : ''}" data-range="${v}" aria-pressed="${ui.range === v}">${l}</button>`).join('')}
@@ -623,8 +628,11 @@
       $('#rangeNote', view).textContent = range.label;
 
       // 提醒
-      // 今天未記錄的帳號已經顯示在上方的快速錄入
       const notices = [installHint()].filter(Boolean);
+      const pending = unrecordedToday();
+      if (pending.length) {
+        notices.push(`<div class="notice notice-info">${icon('calendar')}<div><b>今天還有 ${pending.length} 個帳號沒記 CF Bal</b><p>${pending.slice(0, 6).map((a) => esc(a.name)).join('、')}${pending.length > 6 ? ' 等' : ''}</p></div><button type="button" class="btn btn-sm" data-action="cf">${icon('coin')}記 CF Bal</button></div>`);
+      }
       const last = Store.state.settings.lastBackupAt;
       const days = last ? D.daysBetween(D.toISO(new Date(last)), today) : null;
       if (Store.state.records.length && (days == null || days >= 7)) {
@@ -771,116 +779,157 @@
       }
     }
 
-    // 快速錄入不跟著篩選重畫，切換期間或帳號時輸入不會被清掉
-    renderQuickEntry($('#quickEntry', view));
     update();
   }
 
-  /* 總覽最上面：直接填今天各帳號的 CF Bal 和出貨（備註、補登到「每日錄入」） */
-  function renderQuickEntry(card) {
+  /* ================= CF Bal／出貨 小視窗（總覽的兩個按鈕） ================= */
+  function acctChips(accounts, selected, doneFn) {
+    return `<fieldset class="acct-chips"><legend class="sr-only">帳號</legend>${accounts.map((a) => `
+      <label class="acct-chip" style="--c:${color(a)}"><input type="radio" name="accountId" value="${a.id}" ${a.id === selected ? 'checked' : ''}>
+        ${swatch(a)}<span>${esc(a.name)}</span>${doneFn && doneFn(a) ? `<span class="chip-done" title="這天已記錄">${icon('check', 'icon-xs')}</span>` : ''}</label>`).join('')}</fieldset>`;
+  }
+  const activeAccounts = () => Store.accounts().filter((a) => a.status === 'active');
+  const sumShips = (list) => list.reduce((t, s) => t + s.amount, 0);
+
+  // 只填 CF Bal：選帳號 → 打數字 → 儲存（出貨、備註維持原本的）
+  function openCfModal({ accountId = '', date = '' } = {}) {
+    const accts = activeAccounts();
+    if (!accts.length) { toast('請先新增帳號', 'info'); location.hash = '#/accounts'; return; }
     const today = D.todayISO();
-    const accts = Store.accounts().filter((a) => a.status === 'active');
-    if (!accts.length) { card.hidden = true; return; }
-    const done = accts.filter((a) => Store.recordFor(a.id, today)).length;
-    const val = (n) => (n == null ? '' : fmt(n));
-    card.innerHTML = `
-      <header class="card-head">
-        <div><h3>${icon('entry')}今天的 CF Bal ／ 出貨</h3><p class="card-sub">${fmtDateWeek(today)} · <b>${done} / ${accts.length}</b> 個帳號已記錄 · Sales 算在 ${fmtDate(salesDateFor(today))}${salesPrev() ? '（昨天）' : ''}</p></div>
-        <a class="btn btn-sm btn-ghost" href="#/entry">補登／備註${icon('right', 'icon-xs')}</a>
-      </header>
-      <div class="qe-head"><span>帳號</span><span>今天 CF Bal</span><span>出貨</span><span>Sales</span></div>
-      <div class="qe-list">${accts.map((a) => {
-        const r = Store.recordFor(a.id, today);
-        const prev = Calc.latestBefore(Calc.list(a.id), today);
-        return `<div class="qe-row ${r ? 'is-saved' : ''}" data-aid="${a.id}">
-          <div class="qe-acct">${avatar(a, 'sm')}<div class="er-name"><b>${esc(a.name)}</b><small>上次 ${prev ? `${fmt(prev.balance)}${D.daysBetween(prev.date, today) > 1 ? `（${D.daysBetween(prev.date, today)} 天前）` : ''}` : '—'}</small></div>${r ? `<span class="tag tag-ok">${icon('check', 'icon-xs')}已記錄</span>` : ''}</div>
-          <div class="field qe-bal"><label class="qe-label" for="qb-${a.id}">今天 CF Bal</label><input id="qb-${a.id}" class="input num" name="balance" inputmode="numeric" enterkeyhint="next" autocomplete="off" placeholder="${prev ? fmt(prev.balance) : 'CF Bal'}" value="${val(r && r.balance)}"><span class="field-error"></span></div>
-          <div class="field qe-ship"><label class="qe-label" for="qs-${a.id}">出貨</label><input id="qs-${a.id}" class="input num" name="shipped" inputmode="numeric" enterkeyhint="next" autocomplete="off" placeholder="0" value="${val(r && r.shipped)}"><span class="field-error"></span></div>
-          <div class="qe-calc" data-calc></div>
-        </div>`;
-      }).join('')}</div>
-      <div class="qe-foot"><span class="muted" data-qe-note>填好後按儲存</span><span class="grow"></span><button type="button" class="btn btn-primary" data-qe-save disabled>${icon('check')}儲存</button></div>`;
+    const d0 = date || today;
+    const pick = accountId || (accts.find((a) => !Store.recordFor(a.id, d0)) || accts[0]).id;
+    const body = `<form class="form" id="cfForm" novalidate>
+      <div id="cf-chips">${acctChips(accts, pick, (a) => Store.recordFor(a.id, d0))}</div>
+      <div class="field"><label for="cf-bal">CF Bal</label>
+        <input id="cf-bal" name="balance" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" data-autofocus>
+        <span class="field-hint" id="cf-hint"></span><span class="field-error"></span></div>
+      <div class="calc-box" id="cf-calc" aria-live="polite"></div>
+      <div class="field field-inline"><label for="cf-date">日期</label><input type="date" id="cf-date" name="date" class="input input-sm" value="${d0}" max="${today}"><span class="field-error"></span></div>
+    </form>`;
+    const footer = `<button type="button" class="btn" data-save-next>儲存，下一個帳號</button><span class="grow"></span><button type="button" class="btn btn-primary" data-save>${icon('check')}儲存</button>`;
+    const m = openModal({ title: '記 CF Bal', body, footer, size: 'modal-sm' });
+    const form = $('#cfForm', m.el);
+    const inp = form.balance;
+    const aid = () => { const c = form.querySelector('[name="accountId"]:checked'); return c ? c.value : ''; };
+    let loadedFor = '';
 
-    const rows = $$('.qe-row', card);
-    const saveBtn = $('[data-qe-save]', card);
-    const snapshot = (row) => ['balance', 'shipped'].map((k) => row.querySelector(`[name="${k}"]`).value.replace(/[,\s]/g, '')).join('|');
-    const original = new Map(rows.map((row) => [row, snapshot(row)]));
-    const isDirty = (row) => snapshot(row) !== original.get(row);
+    function refresh() {
+      const a = aid(); const date = D.normalizeDate(form.date.value);
+      if (!a || !date) return;
+      const existing = Store.recordFor(a, date);
+      // 換帳號或日期時，帶入那天已記的 CF Bal
+      if (loadedFor !== a + '|' + date) { loadedFor = a + '|' + date; inp.value = existing ? fmtFull(existing.balance) : ''; }
+      const prev = Calc.latestBefore(Calc.list(a), date);
+      inp.placeholder = prev ? fmtFull(prev.balance) : '例如 12,345';
+      $('#cf-hint', m.el).innerHTML = existing ? `這天已記過 <b>${fmt(existing.balance)}</b>，儲存會更新` : prev ? `上次 ${fmt(prev.balance)}（${fmtDate(prev.date)}）` : '這個帳號的第一筆';
+      const ships = Calc.shipmentsFor(a, date);
+      const shipped = sumShips(ships) + (existing && existing.shipped ? existing.shipped : 0);
+      const bal = parseAmount(inp.value);
+      const f = inp.closest('.field');
+      f.classList.toggle('has-error', !!bal.error); $('.field-error', f).textContent = bal.error || '';
+      const calc = $('#cf-calc', m.el);
+      if (!prev || bal.error || bal.value == null) { calc.innerHTML = ''; return; }
+      const net = bal.value - prev.balance;
+      const sales = net + shipped;
+      calc.innerHTML = `<div class="calc-line"><span>Stock 變化</span><b>${delta(net)}</b></div>
+        <div class="calc-line"><span>出貨</span><b>${fmt(shipped)}</b>${ships.length ? `<small>${ships.length} 筆出貨記錄</small>` : ''}</div>
+        <div class="calc-line"><span>Sales</span><b class="sales-big">${delta(sales)}</b><small>算在 ${fmtDate(salesDateFor(date))}</small></div>
+        ${sales < 0 ? `<div class="calc-status warn">${icon('alert')}<span>Sales 是負數：是不是出貨忘了記？可以照樣儲存，之後補記出貨會自動更正。</span></div>` : ''}`;
+    }
 
-    function updateRow(row) {
-      const prev = Calc.latestBefore(Calc.list(row.dataset.aid), today);
-      const bal = parseAmount(row.querySelector('[name="balance"]').value);
-      const sh = parseAmount(row.querySelector('[name="shipped"]').value);
-      [['balance', bal], ['shipped', sh]].forEach(([k, r]) => {
-        const f = row.querySelector(`[name="${k}"]`).closest('.field');
-        f.classList.toggle('has-error', !!r.error);
-        $('.field-error', f).textContent = r.error || '';
-      });
-      let html = '<span class="muted">—</span>';
-      if (bal.value != null && !bal.error && !sh.error) {
-        if (!prev) html = '<small class="muted">第一筆，還算不出 Sales</small>';
-        else {
-          const net = bal.value - prev.balance;
-          const sales = net + (sh.value || 0);
-          html = `<b class="sales-val">${delta(sales)}</b><small class="muted">Stock ${fmtSigned(net)}${sh.value ? ` ＋ 出貨 ${fmt(sh.value)}` : ''}</small>${sales < 0 ? `<span class="mini-warn" title="CF Bal 少掉的比出貨還多，是不是出貨忘了填？">${icon('alert', 'icon-xs')}負數</span>` : ''}`;
-        }
+    function save(next) {
+      const a = aid(); const date = form.date.value;
+      const existing = Store.recordFor(a, D.normalizeDate(date) || '');
+      try {
+        const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '' });
+        toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}`);
+        if (!next) { m.close(); return; }
+        const d = res.record.date;
+        $('#cf-chips', m.el).innerHTML = acctChips(accts, a, (x) => Store.recordFor(x.id, d));
+        const i = accts.findIndex((x) => x.id === a);
+        const after = accts.slice(i + 1).concat(accts.slice(0, i + 1));
+        const nextAcc = after.find((x) => !Store.recordFor(x.id, d));
+        if (!nextAcc) { toast('這天所有帳號都記好了', 'info'); m.close(); return; }
+        form.querySelector(`[name="accountId"][value="${nextAcc.id}"]`).checked = true;
+        refresh(); inp.focus();
+      } catch (e) {
+        if (e.fieldErrors) setFieldErrors(form, e.fieldErrors); else toast(e.message, 'error');
       }
-      $('[data-calc]', row).innerHTML = html;
-      row.classList.toggle('is-dirty', isDirty(row));
     }
-    function updateFoot() {
-      const n = rows.filter(isDirty).length;
-      const note = $('[data-qe-note]', card);
-      note.textContent = n ? `${n} 個帳號還沒儲存` : '填好後按儲存';
-      note.className = n ? 'warn-text' : 'muted';
-      saveBtn.disabled = !n;
-      card.classList.toggle('is-dirty', n > 0);
+    form.addEventListener('input', refresh);
+    form.addEventListener('change', (e) => { refresh(); if (e.target.name === 'accountId') inp.focus(); });
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(false); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(false); } });
+    $('[data-save]', m.el).addEventListener('click', () => save(false));
+    $('[data-save-next]', m.el).addEventListener('click', () => save(true));
+    refresh();
+  }
+
+  // 只記出貨：選帳號 → 打數量 → 儲存。出貨會加回 Sales，不會算成少賺
+  function openShipModal({ accountId = '', date = '' } = {}) {
+    const accts = activeAccounts();
+    if (!accts.length) { toast('請先新增帳號', 'info'); location.hash = '#/accounts'; return; }
+    const today = D.todayISO();
+    const pick = accountId || (Store.account(ui.lastShipAccount) && Store.account(ui.lastShipAccount).status === 'active' ? ui.lastShipAccount : accts[0].id);
+    const body = `<form class="form" id="shipForm" novalidate>
+      ${acctChips(accts, pick)}
+      <div class="field"><label for="sh-amt">出貨數量</label>
+        <input id="sh-amt" name="amount" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" placeholder="例如 30,000" data-autofocus>
+        <span class="field-error"></span></div>
+      <div class="form-row">
+        <div class="field"><label for="sh-note">備註</label><input id="sh-note" name="note" class="input" maxlength="200" placeholder="選填，例如客人名字"><span class="field-error"></span></div>
+        <div class="field"><label for="sh-date">日期</label><input type="date" id="sh-date" name="date" class="input" value="${date || today}" max="${today}"><span class="field-error"></span></div>
+      </div>
+      <p class="help" id="sh-help"></p>
+      <div id="sh-list"></div>
+    </form>`;
+    const footer = `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-save>${icon('check')}儲存出貨</button>`;
+    const m = openModal({ title: '記出貨', body, footer, size: 'modal-sm' });
+    const form = $('#shipForm', m.el);
+    const aid = () => { const c = form.querySelector('[name="accountId"]:checked'); return c ? c.value : ''; };
+
+    function refresh() {
+      const a = aid(); const date = D.normalizeDate(form.date.value);
+      if (!a || !date) return;
+      // 這筆出貨會算進哪一次 CF Bal（已經有就直接算，沒有就等下一次記 CF Bal）
+      const recs = Calc.list(a);
+      const target = salesPrev() ? recs.find((r) => r.date > date) : recs.find((r) => r.date >= date);
+      $('#sh-help', m.el).innerHTML = `${icon('info')}<span>出貨只會讓 Stock 變少，<b>不扣 Sales</b>。${target
+        ? `這筆會加回 <b>${fmtDate(salesDateFor(target.date))}</b> 的 Sales。`
+        : `記下一次 CF Bal 時會自動加回 Sales（算在 <b>${fmtDate(date)}</b>）。`}</span>`;
+      const pend = new Set(Calc.pendingShipments(a).map((s) => s.id));
+      const list = Calc.shipments(a).slice().reverse();
+      $('#sh-list', m.el).innerHTML = list.length ? `<div class="ship-list-head"><b>最近出貨</b><small>${esc(Store.account(a).name)} · 共 ${list.length} 筆</small></div>
+        <ul class="ship-list">${list.slice(0, 8).map((s) => `<li>
+          <span class="ship-date">${fmtDate(s.date)}</span>
+          <span class="ship-amt">${fmt(s.amount)}</span>
+          <span class="ship-note">${esc(s.note)}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}</span>
+          <button type="button" class="icon-btn danger" data-del-ship="${s.id}" aria-label="刪除這筆出貨" title="刪除">${icon('trash')}</button></li>`).join('')}</ul>` : '';
+      $$('[data-del-ship]', m.el).forEach((b) => b.addEventListener('click', async () => {
+        const s = Store.state.shipments.find((x) => x.id === b.dataset.delShip);
+        if (!s) return;
+        const ok = await confirmDialog({ title: '刪除出貨', message: `確定刪除 ${esc(Store.account(s.accountId).name)} ${fmtDate(s.date)} 的出貨 <b>${fmt(s.amount)}</b>？`, confirmText: '刪除', danger: true });
+        if (!ok) return;
+        safely(() => { Store.deleteShipment(s.id); toast('已刪除出貨'); });
+        refresh();
+      }));
     }
 
-    rows.forEach((row, i) => {
-      updateRow(row);
-      row.addEventListener('input', () => { updateRow(row); updateFoot(); });
-      // Enter：CF Bal → 出貨 → 下一個帳號的 CF Bal → 儲存
-      row.querySelector('[name="balance"]').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); row.querySelector('[name="shipped"]').focus(); }
-      });
-      row.querySelector('[name="shipped"]').addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        if (rows[i + 1]) rows[i + 1].querySelector('[name="balance"]').focus();
-        else if (!saveBtn.disabled) saveBtn.click();
-      });
-    });
-    updateFoot();
-    leaveGuard = () => rows.some(isDirty);
-
-    saveBtn.addEventListener('click', () => {
-      const values = []; let firstBad = null;
-      rows.filter(isDirty).forEach((row) => {
-        const aid = row.dataset.aid;
-        const existing = Store.recordFor(aid, today);
-        const bal = row.querySelector('[name="balance"]').value;
-        const shipped = row.querySelector('[name="shipped"]').value;
-        if (!bal.trim() && !shipped.trim() && !existing) return;
-        const { errors, value } = Store.validateRecord({ date: today, accountId: aid, balance: bal, shipped, note: existing ? existing.note : '' });
-        if (!bal.trim()) errors.balance = existing ? '已有記錄不可清空（要刪除請到「記錄」頁）' : '有填出貨時，CF Bal 必填';
-        ['balance', 'shipped'].forEach((k) => {
-          if (!errors[k]) return;
-          const inp = row.querySelector(`[name="${k}"]`);
-          const f = inp.closest('.field');
-          f.classList.add('has-error'); $('.field-error', f).textContent = errors[k];
-          if (!firstBad) firstBad = inp;
-        });
-        if (!Object.keys(errors).length) values.push(value);
-      });
-      if (firstBad) { firstBad.focus(); toast('有欄位需要修正，尚未儲存任何資料', 'error'); return; }
-      if (!values.length) { toast('沒有需要儲存的內容', 'info'); return; }
-      leaveGuard = null;
-      safely(() => {
-        const res = Store.saveMany(values);
-        toast(`已儲存 ${values.length} 個帳號（新增 ${res.created}、更新 ${res.updated}）`);
-      });
-    });
+    function save() {
+      try {
+        const s = Store.addShipment({ accountId: aid(), date: form.date.value, amount: form.amount.value, note: form.note.value });
+        ui.lastShipAccount = s.accountId; saveUI();
+        toast(`已記出貨：${Store.account(s.accountId).name} ${fmt(s.amount)}`);
+        m.close();
+      } catch (e) {
+        if (e.fieldErrors) setFieldErrors(form, e.fieldErrors); else toast(e.message, 'error');
+      }
+    }
+    form.addEventListener('change', (e) => { refresh(); if (e.target.name === 'accountId') form.amount.focus(); });
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    form.amount.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+    $('[data-save]', m.el).addEventListener('click', save);
+    refresh();
   }
 
   const RANK_METRICS = {
@@ -998,7 +1047,7 @@
       if (si != null) {
         if (x.sales != null) sales[si] = (sales[si] || 0) + x.sales;
         if (x.net != null) net[si] = (net[si] || 0) + x.net;
-        shipped[si] = (shipped[si] || 0) + (r.shipped || 0);
+        shipped[si] = (shipped[si] || 0) + x.shipped;
       }
       const ri = idx.get(r.date);
       if (ri != null) rec[ri]++;
@@ -1166,7 +1215,7 @@
         <article class="card lift">
           <header class="card-head"><div><h3>Stock 分布</h3><p class="card-sub">各帳號目前的 CF Bal</p></div></header>
           <div class="vbars">${stocks.map((s, k) => `<div class="vbar" title="${esc(s.a.name)}：${fmt(s.v)}">
-            <span class="vbar-val">${s.v == null ? '—' : Intl.NumberFormat('zh-TW', { notation: 'compact', maximumFractionDigits: 1 }).format(s.v)}</span>
+            <span class="vbar-val">${s.v == null ? '—' : Charts.compact(s.v)}</span>
             <div class="vbar-track"><div class="vbar-fill" style="height:${s.v ? Math.max(3, (s.v / maxStock) * 100) : 0}%;background:${color(s.a)};--i:${k}"></div></div>
             <span class="vbar-name">${esc(s.a.name)}</span></div>`).join('')}</div>
           ${topStock && topStock.v ? `<p class="card-note"><b>${esc(topStock.a.name)}</b>&nbsp;持有最多：${fmt(topStock.v)}（占 ${Math.round((topStock.v / stockTotal) * 100)}%）</p>` : ''}
@@ -1242,7 +1291,7 @@
     const active = accounts.filter((a) => a.status === 'active');
     const defaultAcc = (active.find((a) => !Store.recordFor(a.id, initDate)) || active[0] || accounts[0]).id;
     const init = record || { date: initDate, accountId: accountId || defaultAcc, balance: null, shipped: null, note: '' };
-    const val = (n) => (n == null ? '' : fmt(n));
+    const val = (n) => (n == null ? '' : fmtFull(n));
 
     const body = `<form class="form" id="recForm" novalidate>
       <div class="form-row">
@@ -1254,9 +1303,9 @@
         <div class="field"><label for="rf-bal">CF Bal <em class="req">必填</em></label>
           <input id="rf-bal" name="balance" class="input input-lg num" inputmode="numeric" autocomplete="off" placeholder="例如 12,345" value="${val(init.balance)}" data-autofocus>
           <span class="field-hint">現在帳號裡的${cur()}（Stock）</span><span class="field-error"></span></div>
-        <div class="field"><label for="rf-ship">出貨 <em class="opt">沒有就留空</em></label>
+        <div class="field"><label for="rf-ship">補記出貨 <em class="opt">通常留空</em></label>
           <input id="rf-ship" name="shipped" class="input input-lg num" inputmode="numeric" autocomplete="off" placeholder="0" value="${val(init.shipped)}">
-          <span class="field-hint">上次記錄後出了多少貨</span><span class="field-error"></span></div>
+          <span class="field-hint" id="rf-ship-hint">平常用「出貨」按鈕記，會自動算進來</span><span class="field-error"></span></div>
       </div>
       <div class="calc-box" id="rf-calc" aria-live="polite"></div>
       <div class="field"><label for="rf-note">備註</label><input id="rf-note" name="note" class="input" maxlength="200" value="${esc(init.note)}" placeholder="例如：出貨給某某、活動加倍"><span class="field-error"></span></div>
@@ -1306,7 +1355,9 @@
         lines.push('<div class="calc-line"><span>上次 CF Bal</span><b class="muted">無（這是這個帳號第一筆，還算不出 Sales）</b></div>');
       }
       const net = prev && !bal.error && bal.value != null ? bal.value - prev.balance : null;
-      const shipped = sh.error ? null : (sh.value || 0);
+      const ships = Calc.shipmentsFor(v.accountId, date);
+      $('#rf-ship-hint', m.el).textContent = ships.length ? `另有 ${ships.length} 筆出貨記錄共 ${fmt(sumShips(ships))}，已自動算進來` : '平常用「出貨」按鈕記，會自動算進來';
+      const shipped = sh.error ? null : (sh.value || 0) + sumShips(ships);
       let status = '';
       if (prev) {
         if (net == null || shipped == null) {
@@ -1321,7 +1372,7 @@
         }
       }
       if (next && !bal.error && bal.value != null) {
-        lines.push(`<div class="calc-line subtle"><span>影響</span><small>下一筆（${fmtDate(next.date)}）的 Sales 會變成 ${fmtSigned(next.balance - bal.value + (next.shipped || 0))}</small></div>`);
+        lines.push(`<div class="calc-line subtle"><span>影響</span><small>下一筆（${fmtDate(next.date)}）的 Sales 會變成 ${fmtSigned(next.balance - bal.value + ((Calc.info(next.id) || {}).shipped || 0))}</small></div>`);
       }
       calc.innerHTML = lines.join('') + status;
     }
@@ -1384,7 +1435,7 @@
     const date = D.isISODate(params.get('date')) ? params.get('date') : today;
     const accounts = Store.accounts().filter((a) => a.status === 'active' || Store.recordFor(a.id, date));
     const recorded = accounts.filter((a) => Store.recordFor(a.id, date)).length;
-    const val = (n) => (n == null ? '' : fmt(n));
+    const val = (n) => (n == null ? '' : fmtFull(n));
 
     if (!accounts.length) {
       view.innerHTML = emptyState({ iconName: 'accounts', title: '沒有啟用中的帳號', text: '所有帳號都已停用。到「帳號」頁重新啟用或新增帳號後，就能在這裡錄入。', actions: '<a class="btn btn-primary" href="#/accounts">前往帳號</a>' });
@@ -1402,7 +1453,7 @@
           </div>
           <div class="entry-progress"><span>${fmtDateWeek(date)}</span><b>${recorded} / ${accounts.length}</b> 個帳號已記錄</div>
         </div>
-        <p class="help">${icon('info')}<span>每天填各帳號的 <b>CF Bal</b>；有出貨就填 <b>出貨</b>（沒有就留空）。<b>Sales = CF Bal 變化 ＋ 出貨</b>，會自動算出，算在 <b>${fmtDate(salesDateFor(date))}</b>${salesPrev() ? '（前一天）' : ''}。出貨不會扣 Sales。${isIOS ? '用鍵盤上方的 ⌄ 箭頭切換到下一格。' : '在 CF Bal 欄按 <kbd>Enter</kbd> 會跳到下一個帳號。'}</span></p>
+        <p class="help">${icon('info')}<span>每天填各帳號的 <b>CF Bal</b>；出貨用「＋出貨」另外記，會自動算進來。<b>Sales = CF Bal 變化 ＋ 出貨</b>，會自動算出，算在 <b>${fmtDate(salesDateFor(date))}</b>${salesPrev() ? '（前一天）' : ''}。出貨不會扣 Sales。${isIOS ? '用鍵盤上方的 ⌄ 箭頭切換到下一格。' : '在 CF Bal 欄按 <kbd>Enter</kbd> 會跳到下一個帳號。'}</span></p>
         <div class="entry-table">
           <div class="entry-head"><span>帳號</span><span>上次 CF Bal</span><span>今天 CF Bal</span><span>出貨</span><span>Sales（${fmtDate(salesDateFor(date)).slice(5)}）</span><span>備註</span></div>
           ${accounts.map((a) => {
@@ -1415,7 +1466,7 @@
                 <div class="input-group"><input id="b-${a.id}" class="input num" name="balance" inputmode="numeric" autocomplete="off" placeholder="${prev ? fmt(prev.balance) : '例如 12,345'}" value="${val(r && r.balance)}">
                 <button type="button" class="btn btn-sm btn-ghost" data-copyprev ${prev ? '' : 'disabled'} title="填入上次的 CF Bal（沒有變化時使用）">沿用</button></div>
                 <span class="field-error"></span></div>
-              <div class="field er-ship"><label class="er-label" for="s-${a.id}">出貨</label><input id="s-${a.id}" class="input num" name="shipped" inputmode="numeric" autocomplete="off" placeholder="0" value="${val(r && r.shipped)}"><span class="field-error"></span></div>
+              <div class="er-ship"><span class="er-label">出貨</span><div class="er-ship-view"><b data-shipsum></b><button type="button" class="btn btn-sm btn-ghost" data-addship title="記一筆出貨">${icon('plus', 'icon-xs')}出貨</button></div></div>
               <div class="er-calc" data-calc></div>
               <div class="field er-note"><label class="er-label" for="n-${a.id}">備註</label><input id="n-${a.id}" class="input" name="note" maxlength="200" placeholder="選填" value="${esc(r ? r.note : '')}"><span class="field-error"></span></div>
             </div>`;
@@ -1425,7 +1476,7 @@
       </section>`;
 
     const rows = $$('.entry-row', view);
-    const snapshot = (row) => ['balance', 'shipped', 'note'].map((k) => {
+    const snapshot = (row) => ['balance', 'note'].map((k) => {
       const v = row.querySelector(`[name="${k}"]`).value.trim();
       if (k === 'note') return v;
       const p = parseAmount(v);
@@ -1438,22 +1489,24 @@
       const aid = row.dataset.aid;
       const get = (k) => row.querySelector(`[name="${k}"]`).value;
       const prev = Calc.latestBefore(Calc.list(aid), date);
-      const bal = parseAmount(get('balance')); const sh = parseAmount(get('shipped'));
+      const bal = parseAmount(get('balance'));
+      // 出貨：這筆 CF Bal 會算進的出貨記錄（＋記錄上補記的）
+      const existing = Store.recordFor(aid, date);
+      const shipTotal = sumShips(Calc.shipmentsFor(aid, date)) + (existing && existing.shipped ? existing.shipped : 0);
+      $('[data-shipsum]', row).innerHTML = shipTotal ? fmt(shipTotal) : '<span class="muted">0</span>';
       // 即時欄位錯誤
-      [['balance', bal], ['shipped', sh]].forEach(([k, r]) => {
-        const f = row.querySelector(`[name="${k}"]`).closest('.field');
-        f.classList.toggle('has-error', !!r.error);
-        $('.field-error', f).textContent = r.error || '';
-      });
+      const f = row.querySelector('[name="balance"]').closest('.field');
+      f.classList.toggle('has-error', !!bal.error);
+      $('.field-error', f).textContent = bal.error || '';
       const net = prev && !bal.error && bal.value != null ? bal.value - prev.balance : null;
       const parts = [];
       if (bal.value == null || bal.error) parts.push('<span class="muted">—</span>');
       else if (!prev) parts.push('<small class="muted">第一筆，還算不出 Sales</small>');
-      else if (!sh.error) {
-        const sales = net + (sh.value || 0);
+      else {
+        const sales = net + shipTotal;
         const gap = D.daysBetween(prev.date, date);
         parts.push(`<span class="calc-k">Sales</span><b class="sales-val">${delta(sales)}</b>`);
-        parts.push(`<small class="muted">Stock ${fmtSigned(net)}${sh.value ? ` ＋ 出貨 ${fmt(sh.value)}` : ''}${gap > 1 ? `，跨 ${gap} 天` : ''}</small>`);
+        parts.push(`<small class="muted">Stock ${fmtSigned(net)}${shipTotal ? ` ＋ 出貨 ${fmt(shipTotal)}` : ''}${gap > 1 ? `，跨 ${gap} 天` : ''}</small>`);
         if (sales < 0) parts.push(`<span class="mini-warn" title="CF Bal 少掉的比出貨還多，是不是出貨忘了填？">${icon('alert', 'icon-xs')}負數</span>`);
       }
       $('[data-calc]', row).innerHTML = parts.join(' ');
@@ -1474,8 +1527,13 @@
       $('[data-copyprev]', row).addEventListener('click', () => {
         const prev = Calc.latestBefore(Calc.list(row.dataset.aid), date);
         if (!prev) return;
-        row.querySelector('[name="balance"]').value = fmt(prev.balance);
+        row.querySelector('[name="balance"]').value = fmtFull(prev.balance);
         updateRow(row); updateFooter();
+      });
+      // 記出貨會重畫這頁，有沒存的 CF Bal 時先提醒
+      $('[data-addship]', row).addEventListener('click', () => {
+        if (rows.some(isDirty)) { toast('請先儲存 CF Bal，再記出貨', 'info'); return; }
+        openShipModal({ accountId: row.dataset.aid, date: date < today ? salesDateFor(date) : today });
       });
       row.querySelector('[name="balance"]').addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
@@ -1505,10 +1563,10 @@
         const aid = row.dataset.aid;
         const get = (k) => row.querySelector(`[name="${k}"]`).value;
         const existing = Store.recordFor(aid, date);
-        const allEmpty = ['balance', 'shipped', 'note'].every((k) => !get(k).trim());
+        const allEmpty = ['balance', 'note'].every((k) => !get(k).trim());
         if (allEmpty && !existing) return;
-        const { errors, value } = Store.validateRecord({ date, accountId: aid, balance: get('balance'), shipped: get('shipped'), note: get('note') });
-        if (!get('balance').trim()) errors.balance = existing ? '已有記錄不可清空（要刪除請到「記錄」頁）' : '有填出貨或備註時，CF Bal 必填';
+        const { errors, value } = Store.validateRecord({ date, accountId: aid, balance: get('balance'), shipped: existing ? existing.shipped : null, note: get('note') });
+        if (!get('balance').trim()) errors.balance = existing ? '已有記錄不可清空（要刪除請到「記錄」頁）' : '有填備註時，CF Bal 必填';
         Object.keys(errors).forEach((k) => {
           const inp = row.querySelector(`[name="${k}"]`);
           if (!inp) return;
@@ -1597,7 +1655,7 @@
           case 'account': { const a = Store.account(r.accountId); return a ? a.name : ''; }
           case 'balance': return r.balance;
           case 'net': return x.net;
-          case 'shipped': return r.shipped;
+          case 'shipped': return x.shipped || null;
           case 'sales': return x.sales;
           case 'salesDate': return x.salesDate;
           default: return r.date;
@@ -1630,7 +1688,7 @@
           <td><span class="cell-acct">${swatch(a)}<span>${esc(a ? a.name : '（已刪除）')}<small>${esc(a && a.gameId ? a.gameId : '')}</small></span></span></td>
           <td class="num">${fmt(r.balance)}</td>
           <td class="num">${x.net == null ? '<span class="muted">—</span>' : delta(x.net)}</td>
-          <td class="num">${r.shipped ? fmt(r.shipped) : '<span class="muted">—</span>'}</td>
+          <td class="num">${x.shipped ? `${fmt(x.shipped)}${x.shipList && x.shipList.length > 1 ? `<small>${x.shipList.length} 筆</small>` : ''}` : '<span class="muted">—</span>'}</td>
           <td class="num">${salesCell}${x.gap > 1 ? `<small class="gap" title="和上次記錄相隔 ${x.gap} 天，這是 ${x.gap} 天的合計">跨 ${x.gap} 天</small>` : ''}</td>
           <td class="nowrap">${x.salesDate ? fmtDate(x.salesDate) : '—'}</td>
           <td class="note-cell" title="${esc(r.note)}">${esc(r.note) || '<span class="muted">—</span>'}</td>
@@ -2113,6 +2171,8 @@
     if (t.dataset.editAccount) { openAccountModal(Store.account(t.dataset.editAccount)); return; }
     switch (t.dataset.action) {
       case 'new-record': openRecordModal(); break;
+      case 'cf': openCfModal({ accountId: t.dataset.account || '', date: t.dataset.date || '' }); break;
+      case 'ship': openShipModal({ accountId: t.dataset.account || '', date: t.dataset.date || '' }); break;
       case 'new-account': openAccountModal(null); break;
       case 'backup': backupNow(); break;
       case 'import-csv': importCsvFlow(); break;
