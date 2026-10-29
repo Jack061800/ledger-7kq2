@@ -150,12 +150,15 @@
       const id = String(x.id || uid('s'));
       if (shipIds.has(id)) return;
       shipIds.add(id);
-      state.shipments.push({
+      const ship = {
         id, accountId: String(x.accountId), date: x.date, amount: x.amount,
         note: String(x.note || ''),
         createdAt: x.createdAt || x.updatedAt || new Date().toISOString(),
         updatedAt: x.updatedAt || new Date().toISOString(),
-      });
+      };
+      // 被管理員退回的出貨：保留記錄給本人看，但不算進 Sales 和結算
+      if (x.rejected && typeof x.rejected === 'object') ship.rejected = { reason: String(x.rejected.reason || ''), note: String(x.rejected.note || ''), at: String(x.rejected.at || '') };
+      state.shipments.push(ship);
     });
     return state;
   }
@@ -253,7 +256,7 @@
     (state.shipments || []).forEach((s) => { const list = shipsByAccount.get(s.accountId); if (list) list.push(s); });
     byAccount.forEach((list, accountId) => {
       list.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
-      const ships = shipsByAccount.get(accountId).sort(byShipOrder);
+      const ships = shipsByAccount.get(accountId).sort(byShipOrder).filter((s) => !s.rejected);
       const used = new Set();
       let prev = null;
       list.forEach((r) => {
@@ -461,6 +464,24 @@
         this._tomb(s, 's:' + id);
       });
     },
+    // 套用管理員的退回名單 { 出貨id: { reason, note, at } }：名單有的標成退回，沒有的取消退回
+    // 回傳這次新被退回的出貨；沒有變動就不寫入
+    applyShipmentRejects(rejects) {
+      const want = rejects || {};
+      const same = (a, b) => (!a && !b) || (a && b && a.at === b.at && a.reason === b.reason && a.note === b.note);
+      const changed = (this.state.shipments || []).filter((x) => !same(x.rejected, want[x.id]));
+      if (!changed.length) return [];
+      return this._commit((s) => {
+        const now = nowISO(); const added = [];
+        s.shipments.forEach((x) => {
+          if (same(x.rejected, want[x.id])) return;
+          const r = want[x.id];
+          if (r) { x.rejected = { reason: String(r.reason || ''), note: String(r.note || ''), at: String(r.at || now) }; added.push(x); } else delete x.rejected;
+          x.updatedAt = now;
+        });
+        return added;
+      });
+    },
 
     /* 記錄 */
     recordFor(accountId, date) {
@@ -621,7 +642,7 @@
     // 如果在 date 記一筆 CF Bal，會算進哪些出貨（用在輸入時的即時試算）
     shipmentsFor(accountId, date) {
       const prev = this.latestBefore(this.list(accountId), date);
-      return this.shipments(accountId).filter((s) => shipBelongs(s.date, prev ? prev.date : null, date, Store.state.settings));
+      return this.shipments(accountId).filter((s) => !s.rejected && shipBelongs(s.date, prev ? prev.date : null, date, Store.state.settings));
     },
 
     /* 某帳號在 [start, end] 期間的統計（依 Sales 歸屬日 salesDate 判斷是否在期間內）

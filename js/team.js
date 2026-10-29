@@ -1,7 +1,9 @@
 /* 多人：使用者名單、朋友出貨的定價、付款與欠款
  *   allow/{email}   允許登入的名單（只有管理員能改）
- *   settle/{email}  某位朋友的結算：{ prices: { 出貨id: { p: 每 1B 的 RM 單價, at } }, payments: [{ id, date, amount, note, at }] }
- * 朋友用「出貨」按鈕記的每一筆，管理員填單價後算出金額，就是管理員欠朋友的錢；付款後扣掉。 */
+ *   settle/{email}  某位朋友的結算：{ prices: { 出貨id: { p: 每 1B 的 RM 單價, at } }, payments: [{ id, date, amount, note, at }],
+ *                   rejects: { 出貨id: { reason, note, at, amount, date } } }
+ * 朋友用「出貨」按鈕記的每一筆，管理員填單價後算出金額，就是管理員欠朋友的錢；付款後扣掉。
+ * 記錯的出貨管理員可以退回（rejects）：朋友的 App 讀到後會把那筆標成退回，不再算進 Sales 和結算。 */
 (function (global) {
   'use strict';
 
@@ -14,11 +16,13 @@
   const listeners = [];
   const cache = (() => { try { return JSON.parse(localStorage.getItem(CACHE_KEY)) || {}; } catch (_) { return {}; } })();
 
-  const emptySettle = () => ({ prices: {}, payments: [] });
+  const emptySettle = () => ({ prices: {}, payments: [], rejects: {} });
   const readSettle = (doc) => {
     if (!doc) return emptySettle();
-    try { const x = JSON.parse(doc.data.data || '{}'); return { prices: x.prices || {}, payments: x.payments || [] }; } catch (_) { return emptySettle(); }
+    try { const x = JSON.parse(doc.data.data || '{}'); return { prices: x.prices || {}, payments: x.payments || [], rejects: x.rejects || {} }; } catch (_) { return emptySettle(); }
   };
+  const settleOf = (email) => ({ ...emptySettle(), ...(Team.settle[email] || {}) });
+  const SEEN_KEY = 'gct:rejects:seen';
   // 管理員端只需要朋友的帳號名稱和出貨，存在本機讓離線時也能看結算
   const slim = (state) => ({ accounts: state.accounts.map((a) => ({ id: a.id, name: a.name, colorIndex: a.colorIndex })), shipments: state.shipments || [] });
   const round2 = (n) => Math.round(n * 100) / 100;
@@ -75,6 +79,7 @@
         } else {
           const me = Team.me();
           Team.settle = { [me]: readSettle(await Cloud.get(`settle/${me}`)) };
+          applyRejects(Team.settle[me].rejects);
         }
         Team.loadedAt = Date.now();
         Team.error = '';
@@ -90,29 +95,55 @@
     return inflight;
   };
 
+  /* ---------- 朋友端：套用退回 ---------- */
+  // 把管理員的退回名單寫進自己的帳本（同步後管理員那邊看到的帳本也會更新）
+  function applyRejects(rejects) {
+    const Store = global.GCT && global.GCT.Store;
+    if (!Store || Store.readOnly || Team.isAdmin()) return;
+    try {
+      const added = Store.applyShipmentRejects(rejects);
+      if (added.length) Team.justRejected = added;
+    } catch (e) { console.warn('套用退回失敗', e); }
+  }
+  // 朋友端：被退回但還沒按「知道了」的出貨
+  Team.unseenRejects = function unseenRejects(shipments) {
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(SEEN_KEY)) || []; } catch (_) { /* 沒有就當全部沒看過 */ }
+    return (shipments || []).filter((s) => s.rejected && !seen.includes(`${s.id}@${s.rejected.at}`));
+  };
+  Team.markRejectsSeen = function markRejectsSeen(shipments) {
+    const keys = (shipments || []).filter((s) => s.rejected).map((s) => `${s.id}@${s.rejected.at}`);
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(keys.slice(-300))); } catch (_) { /* 只是提醒，存不了沒關係 */ }
+    listeners.forEach((fn) => fn(Team));
+  };
+
   /* ---------- 計算 ---------- */
   // 某人的出貨列表（含單價、金額）。source 是 { accounts, shipments }：管理員用快取的朋友資料，朋友用自己的帳本
+  // 退回的出貨看管理員的名單（立即生效）或帳本上的標記（朋友端套用後），不計價
   Team.rows = function rows(email, source) {
-    const st = Team.settle[email] || emptySettle();
+    const st = settleOf(email);
     const names = new Map((source.accounts || []).map((a) => [a.id, a]));
     return (source.shipments || []).map((s) => {
-      const pr = st.prices[s.id];
+      // 管理員以退回名單為準（復原後立刻生效）；朋友以自己帳本上的標記為準（和 Sales 計算一致）
+      const rejected = (Team.isAdmin() ? st.rejects[s.id] : s.rejected) || null;
+      const pr = rejected ? null : st.prices[s.id];
       const price = pr && typeof pr.p === 'number' ? pr.p : null;
-      return { ...s, account: names.get(s.accountId) || null, price, money: price == null ? null : round2((s.amount / UNIT) * price) };
+      return { ...s, rejected, account: names.get(s.accountId) || null, price, money: price == null ? null : round2((s.amount / UNIT) * price) };
     }).sort((a, b) => (a.date === b.date ? ((a.createdAt || '') < (b.createdAt || '') ? 1 : -1) : a.date < b.date ? 1 : -1));
   };
   Team.summary = function summary(email, source) {
-    const list = Team.rows(email, source);
-    const st = Team.settle[email] || emptySettle();
+    const all = Team.rows(email, source);
+    const list = all.filter((r) => !r.rejected);
+    const st = settleOf(email);
     const owed = round2(list.reduce((t, r) => t + (r.money || 0), 0));
     const paid = round2(st.payments.reduce((t, p) => t + (Number(p.amount) || 0), 0));
     const pending = list.filter((r) => r.price == null);
-    return { owed, paid, balance: round2(owed - paid), pending: pending.length, pendingAmount: pending.reduce((t, r) => t + r.amount, 0), count: list.length };
+    return { owed, paid, balance: round2(owed - paid), pending: pending.length, pendingAmount: pending.reduce((t, r) => t + r.amount, 0), count: list.length, rejected: all.length - list.length };
   };
   Team.sourceFor = (email) => Team.ledgers[email] || { accounts: [], shipments: [] };
   // 管理員：所有朋友待定價的筆數（側欄徽章）
   Team.pendingTotal = () => (Team.isAdmin() ? Team.users.reduce((t, u) => t + Team.summary(u.email, Team.sourceFor(u.email)).pending, 0) : 0);
-  Team.isPriced = (email, shipId) => { const st = Team.settle[email]; return !!(st && st.prices[shipId]); };
+  Team.isPriced = (email, shipId) => { const st = settleOf(email); return !!st.prices[shipId] && !st.rejects[shipId]; };
 
   /* ---------- 管理員操作 ---------- */
   function requireAdmin() {
@@ -127,6 +158,7 @@
       const doc = await Cloud.get(`settle/${email}`);
       const st = readSettle(doc);
       mutate(st);
+      if (!Object.keys(st.rejects).length) delete st.rejects;
       try {
         await Cloud.commit([{ path: `settle/${email}`, data: { data: JSON.stringify(st), updatedAt: new Date().toISOString() }, ...(doc ? { ifUpdateTime: doc.updateTime } : { ifMissing: true }) }]);
         Team.settle = { ...Team.settle, [email]: st };
@@ -147,6 +179,18 @@
     st.payments.push({ id: uid(), date, amount: round2(amount), note: String(note || '').trim().slice(0, 200), at: new Date().toISOString() });
   });
   Team.deletePayment = (email, id) => updateSettle(email, (st) => { st.payments = st.payments.filter((p) => p.id !== id); });
+
+  // 退回出貨的理由（選單）
+  Team.REJECT_REASONS = ['重複記錄（記了兩次）', '數量記錯', '帳號選錯', '日期記錯', '沒有收到這批貨', '其他'];
+  // 退回：寫進退回名單，並取消定價（不再算錢）
+  Team.rejectShipments = (email, ships, reason, note) => updateSettle(email, (st) => {
+    const at = new Date().toISOString();
+    ships.forEach((s) => {
+      st.rejects[s.id] = { reason: String(reason || '').slice(0, 40), note: String(note || '').trim().slice(0, 200), at, amount: s.amount, date: s.date };
+      delete st.prices[s.id];
+    });
+  });
+  Team.unrejectShipment = (email, id) => updateSettle(email, (st) => { delete st.rejects[id]; });
 
   Team.validateEmail = (raw) => {
     const email = normEmail(raw);

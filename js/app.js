@@ -89,6 +89,7 @@
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/>',
     eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
     tag: '<path d="M3.5 12.5V4.5a1 1 0 0 1 1-1h8l8 8-9 9Z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
+    reject: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
   };
   const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
@@ -645,7 +646,7 @@
       $('#rangeNote', view).textContent = range.label;
 
       // 提醒
-      const notices = [installHint()].filter(Boolean);
+      const notices = [installHint(), Store.readOnly ? '' : rejectNotice(Store.state.shipments)].filter(Boolean);
       const pending = unrecordedToday();
       if (pending.length) {
         notices.push(`<div class="notice notice-info">${icon('calendar')}<div><b>今天還有 ${pending.length} 個帳號沒記 CF Bal</b><p>${pending.slice(0, 6).map((a) => esc(a.name)).join('、')}${pending.length > 6 ? ' 等' : ''}</p></div><button type="button" class="btn btn-sm" data-action="cf">${icon('coin')}記 CF Bal</button></div>`);
@@ -922,8 +923,8 @@
       $('#sh-list', m.el).innerHTML = list.length ? `<div class="ship-list-head"><b>最近出貨</b><small>${esc(Store.account(a).name)} · 共 ${list.length} 筆</small></div>
         <ul class="ship-list">${list.slice(0, 8).map((s) => `<li>
           <span class="ship-date">${fmtDate(s.date)}</span>
-          <span class="ship-amt">${fmt(s.amount)}</span>
-          <span class="ship-note">${esc(s.note)}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}${shipPriced(s.id) ? '<span class="tag tag-ok">已定價</span>' : ''}</span>
+          <span class="ship-amt${s.rejected ? ' is-rejected' : ''}">${fmt(s.amount)}</span>
+          <span class="ship-note">${esc(s.note)}${s.rejected ? `<span class="tag tag-low" title="${esc(s.rejected.reason)}${s.rejected.note ? '：' + esc(s.rejected.note) : ''}">已退回</span>` : ''}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}${shipPriced(s.id) ? '<span class="tag tag-ok">已定價</span>' : ''}</span>
           <button type="button" class="icon-btn danger" data-del-ship="${s.id}" aria-label="刪除這筆出貨" title="刪除">${icon('trash')}</button></li>`).join('')}</ul>` : '';
       $$('[data-del-ship]', m.el).forEach((b) => b.addEventListener('click', async () => {
         const s = Store.state.shipments.find((x) => x.id === b.dataset.delShip);
@@ -2139,14 +2140,32 @@
 
   function shipRowsHtml(rows, { admin, email }) {
     if (!rows.length) return `<p class="muted settle-empty">還沒有出貨紀錄。${admin ? '' : '在「總覽」按「出貨」記一筆，就會出現在這裡。'}</p>`;
-    return `<ul class="settle-list">${rows.map((r) => `<li class="${r.price == null ? 'is-pending' : ''}">
+    const priceCell = (r) => (r.rejected
+      ? `<span class="tag tag-low">已退回</span><small title="${esc(r.rejected.note)}">${esc(r.rejected.reason)}</small>`
+      : r.price == null ? '<span class="tag tag-warn">待定價</span>' : `<small>RM ${rmf.format(r.price)} / 1B</small><b>${fmtRM(r.money)}</b>`);
+    const actions = (r) => (r.rejected
+      ? `<button type="button" class="btn btn-sm btn-ghost" data-unreject="${esc(r.id)}" data-email="${esc(email)}">${icon('undo')}復原</button>`
+      : `<button type="button" class="btn btn-sm ${r.price == null ? 'btn-primary' : 'btn-ghost'}" data-price="${esc(r.id)}" data-email="${esc(email)}">${r.price == null ? '定價' : '改'}</button>
+         <button type="button" class="icon-btn danger" data-reject="${esc(r.id)}" data-email="${esc(email)}" aria-label="退回這筆出貨" title="退回（記錯的出貨）">${icon('reject')}</button>`);
+    return `<ul class="settle-list">${rows.map((r) => `<li class="${r.rejected ? 'is-rejected' : r.price == null ? 'is-pending' : ''}">
         <span class="sl-date">${fmtDate(r.date)}</span>
         <span class="sl-acct">${r.account ? `${swatch(r.account)}${esc(r.account.name)}` : '<span class="muted">已刪除的帳號</span>'}</span>
         <span class="sl-amt">${fmt(r.amount)}</span>
-        <span class="sl-note">${esc(r.note)}</span>
-        <span class="sl-price">${r.price == null ? '<span class="tag tag-warn">待定價</span>' : `<small>RM ${rmf.format(r.price)} / 1B</small><b>${fmtRM(r.money)}</b>`}</span>
-        ${admin ? `<button type="button" class="btn btn-sm ${r.price == null ? 'btn-primary' : 'btn-ghost'}" data-price="${esc(r.id)}" data-email="${esc(email)}">${r.price == null ? '定價' : '改'}</button>` : ''}
+        <span class="sl-note">${r.rejected && r.rejected.note ? `退回說明：${esc(r.rejected.note)}` : esc(r.note)}</span>
+        <span class="sl-price">${priceCell(r)}</span>
+        ${admin ? `<span class="sl-actions">${actions(r)}</span>` : ''}
       </li>`).join('')}</ul>`;
+  }
+
+  // 朋友端：被管理員退回、還沒看過的出貨
+  function rejectNotice(shipments) {
+    const list = Team ? Team.unseenRejects(shipments) : [];
+    if (!list.length) return '';
+    const names = new Map(Store.state.accounts.map((a) => [a.id, a.name]));
+    return `<div class="notice notice-reject">${icon('reject')}<div><b>管理員退回了 ${list.length} 筆出貨</b>
+        <p>這些出貨已經撤回，不再算進 Sales、出貨合計和結算。記錯了的話請重新記一筆正確的。</p>
+        <ul>${list.slice(0, 6).map((s) => `<li>${fmtDate(s.date)} · ${esc(names.get(s.accountId) || '')} · <b>${fmt(s.amount)}</b> — ${esc(s.rejected.reason)}${s.rejected.note ? `（${esc(s.rejected.note)}）` : ''}</li>`).join('')}</ul></div>
+      <button type="button" class="btn btn-sm" data-action="rejects-seen">知道了</button></div>`;
   }
 
   function paymentsHtml(st, { admin, email }) {
@@ -2191,8 +2210,9 @@
     const sum = Team.summary(email, source);
     const rows = Team.rows(email, source);
     const st = Team.settle[email] || { prices: {}, payments: [] };
-    const showAll = ui.settleShow !== 'pending';
-    const shown = showAll ? rows : rows.filter((r) => r.price == null);
+    const show = ['pending', 'all', 'rejected'].includes(ui.settleShow) ? ui.settleShow : 'all';
+    const rejectedRows = rows.filter((r) => r.rejected);
+    const shown = show === 'pending' ? rows.filter((r) => !r.rejected && r.price == null) : show === 'rejected' ? rejectedRows : rows;
     $('#pageActions').innerHTML = `<a class="btn" href="#/settle">${icon('left')}全部人</a>
       <button type="button" class="btn" data-action="view-ledger" data-email="${esc(email)}">${icon('eye')}看他的帳本</button>`;
     view.innerHTML = `
@@ -2200,11 +2220,12 @@
         <div><h2>${esc(u.name || email.split('@')[0])}</h2><p class="muted">${esc(email)}</p></div>${loadingNote()}</div>
       ${settleTiles(sum, { owed: '出貨總金額', paid: '已付給他', balance: '你還欠他' })}
       <section class="card">
-        <header class="card-head"><div><h3>出貨</h3><p class="card-sub">單價以每 1B 多少 RM 計；金額 = 數量 ÷ 1B × 單價</p></div>
+        <header class="card-head"><div><h3>出貨</h3><p class="card-sub">單價以每 1B 多少 RM 計；金額 = 數量 ÷ 1B × 單價。記錯的按 ${icon('reject', 'icon-sm')} 退回。</p></div>
           <div class="btn-pair">
             <div class="seg" data-seg="settle-show" role="group" aria-label="顯示">
-              <button type="button" class="seg-btn ${!showAll ? 'active' : ''}" data-settle-show="pending">待定價（${sum.pending}）</button>
-              <button type="button" class="seg-btn ${showAll ? 'active' : ''}" data-settle-show="all">全部（${rows.length}）</button>
+              <button type="button" class="seg-btn ${show === 'pending' ? 'active' : ''}" data-settle-show="pending">待定價（${sum.pending}）</button>
+              <button type="button" class="seg-btn ${show === 'all' ? 'active' : ''}" data-settle-show="all">全部（${rows.length}）</button>
+              ${rejectedRows.length || show === 'rejected' ? `<button type="button" class="seg-btn ${show === 'rejected' ? 'active' : ''}" data-settle-show="rejected">已退回（${rejectedRows.length}）</button>` : ''}
             </div>
             ${sum.pending > 1 ? `<button type="button" class="btn btn-sm" data-price-all="${esc(email)}">${icon('tag')}全部待定價一起定</button>` : ''}
           </div></header>
@@ -2223,9 +2244,10 @@
     $('#pageActions').innerHTML = `<button type="button" class="btn" data-action="team-refresh">${icon('refresh')}更新</button>
       <button type="button" class="btn btn-ship" data-action="ship">${icon('ship')}出貨</button>`;
     view.innerHTML = `
+      ${rejectNotice(Store.state.shipments)}
       ${settleTiles(sum, { owed: '出貨總金額', paid: '已收到', balance: '還欠你' })}
       <section class="card">
-        <header class="card-head"><div><h3>我的出貨</h3><p class="card-sub">用「出貨」按鈕記的每一筆。管理員填好單價（每 1B 多少 RM）後就會算出金額。</p></div>${loadingNote()}</header>
+        <header class="card-head"><div><h3>我的出貨</h3><p class="card-sub">用「出貨」按鈕記的每一筆。管理員填好單價（每 1B 多少 RM）後就會算出金額；記錯的會被退回。</p></div>${loadingNote()}</header>
         ${shipRowsHtml(rows, { admin: false, email: me })}
       </section>
       ${paymentsHtml(Team.settle[me] || { payments: [] }, { admin: false, email: me })}`;
@@ -2235,7 +2257,16 @@
     $$('[data-price]', view).forEach((b) => b.addEventListener('click', () => openPriceModal(b.dataset.email, [b.dataset.price])));
     $$('[data-price-all]', view).forEach((b) => b.addEventListener('click', () => {
       const email = b.dataset.priceAll;
-      openPriceModal(email, Team.rows(email, Team.sourceFor(email)).filter((r) => r.price == null).map((r) => r.id));
+      openPriceModal(email, Team.rows(email, Team.sourceFor(email)).filter((r) => !r.rejected && r.price == null).map((r) => r.id));
+    }));
+    $$('[data-reject]', view).forEach((b) => b.addEventListener('click', () => openRejectModal(b.dataset.email, b.dataset.reject)));
+    $$('[data-unreject]', view).forEach((b) => b.addEventListener('click', async () => {
+      const email = b.dataset.email;
+      const r = Team.rows(email, Team.sourceFor(email)).find((x) => x.id === b.dataset.unreject);
+      if (!r) return;
+      const ok = await confirmDialog({ title: '復原出貨', message: `把 ${fmtDate(r.date)} 的出貨 <b>${fmt(r.amount)}</b> 復原？<br>復原後會重新算進他的 Sales，也要再定價一次。`, confirmText: '復原' });
+      if (!ok) return;
+      try { await Team.unrejectShipment(email, r.id); toast('已復原，他下次打開 App 就會更新'); } catch (err) { toast(err.message, 'error'); }
     }));
     $$('[data-pay]', view).forEach((b) => b.addEventListener('click', () => openPaymentModal(b.dataset.pay)));
     $$('[data-pay-del]', view).forEach((b) => b.addEventListener('click', async () => {
@@ -2303,6 +2334,35 @@
     if (un) un.addEventListener('click', async () => {
       try { await Team.setPrices(email, [single.id], null); m.close(); toast('已取消定價'); } catch (err) { toast(err.message, 'error'); }
     });
+  }
+
+  // 管理員：退回記錯的出貨，選理由
+  function openRejectModal(email, id) {
+    const r = Team.rows(email, Team.sourceFor(email)).find((x) => x.id === id);
+    if (!r) return;
+    const m = openModal({
+      title: '退回出貨', size: 'modal-sm',
+      body: `<form class="form" id="rejectForm" novalidate>
+        <div class="price-what"><b>${fmt(r.amount)}</b><span>${fmtDate(r.date)} · ${esc(r.account ? r.account.name : '')}${r.note ? ` · ${esc(r.note)}` : ''}</span></div>
+        <div class="field"><label>理由</label>
+          <div class="reason-chips">${Team.REJECT_REASONS.map((t, k) => `<label class="reason-chip"><input type="radio" name="reason" value="${esc(t)}" ${k === 0 ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}</div>
+          <span class="field-error"></span></div>
+        <div class="field"><label for="rj-note">說明給他看</label><input id="rj-note" name="note" class="input" maxlength="200" placeholder="選填，例如 10/28 已經記過一次"><span class="field-error"></span></div>
+        <p class="help">${icon('info')}<span>退回後這筆<b>不算錢</b>${r.price != null ? `（原本 ${fmtRM(r.money)}，會取消定價）` : ''}。${esc(Team.nameOf(email))} 下次打開 App 時，這筆會自動撤回：他的 Sales 和出貨合計扣掉 <b>${fmt(r.amount)}</b>，並看到你選的理由。</span></p>
+      </form>`,
+      footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-danger" data-ok>${icon('reject')}退回</button>`,
+    });
+    const form = $('#rejectForm', m.el);
+    const save = async () => {
+      const reason = (form.querySelector('[name="reason"]:checked') || {}).value;
+      const note = form.note.value.trim();
+      if (!reason) { setFieldErrors(form, { reason: '請選一個理由' }); return; }
+      if (reason === '其他' && !note) { setFieldErrors(form, { note: '選「其他」請寫一下說明' }); return; }
+      const btn = $('[data-ok]', m.el); btn.disabled = true;
+      try { await Team.rejectShipments(email, [r], reason, note); m.close(); toast(`已退回 ${fmt(r.amount)}`); } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    };
+    $('[data-ok]', m.el).addEventListener('click', save);
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
   }
 
   function openPaymentModal(email) {
@@ -2518,6 +2578,7 @@
         if (!navigator.onLine) { toast('目前沒有網路', 'info'); break; }
         Team.refresh().then(() => { if (Team.error) toast(`更新失敗：${Team.error}`, 'error'); else toast('已更新'); });
         break;
+      case 'rejects-seen': Team.markRejectsSeen(Store.state.shipments); render(false); break;
       case 'hide-install':
         ui.installHintHidden = true; saveUI();
         $$('.install-hint').forEach((el) => el.remove());
@@ -2543,6 +2604,10 @@
   // 結算資料更新：結算頁整頁重畫，其他頁只更新側欄徽章（避免打斷正在輸入的表單）
   let teamTimer = null;
   if (Team) Team.onChange(() => {
+    if (Team.justRejected) {
+      const n = Team.justRejected.length; Team.justRejected = null;
+      toast(`管理員退回了 ${n} 筆出貨，已從你的 Sales 撤回`, 'info');
+    }
     renderChrome(route().name);
     if (route().name !== 'settle') return;
     // 等剛按下儲存的對話框關完再重畫；還有對話框開著就不打斷
