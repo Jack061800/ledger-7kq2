@@ -127,6 +127,19 @@
     const plot = svgEl('g', { class: animate ? 'plot is-animating' : 'plot' });
     svg.append(plot);
     series.forEach((s, si) => {
+      // s.gradient：線條由左到右漸層（例如 ['#67e8f9', '#3b82f6', '#7c6cff']），面積用 s.color 由上往下淡出
+      let stroke = s.color;
+      // s.connect：沒資料的日子直接連過去，不斷線
+      let first = -1; let last = -1;
+      s.values.forEach((v, i) => { if (v != null) { if (first < 0) first = i; last = i; } });
+      if (s.gradient) {
+        const id = `g${++gid}`;
+        const gx1 = first < last ? x(first) : m.l; const gx2 = first < last ? x(last) : W - m.r;
+        const lg = svgEl('linearGradient', { id, gradientUnits: 'userSpaceOnUse', x1: gx1, x2: gx2, y1: 0, y2: 0 });
+        s.gradient.forEach((c, k) => lg.append(svgEl('stop', { offset: `${(k / (s.gradient.length - 1)) * 100}%`, style: `stop-color:${c}` })));
+        defs.append(lg);
+        stroke = `url(#${id})`;
+      }
       let seg = [];
       const flush = () => {
         const pts = seg.map((i) => [x(i), y(s.values[i])]);
@@ -135,21 +148,28 @@
           if (s.area) {
             const id = `g${++gid}`;
             const lg = svgEl('linearGradient', { id, x1: 0, x2: 0, y1: 0, y2: 1 });
-            lg.append(svgEl('stop', { offset: '0%', style: `stop-color:${s.color};stop-opacity:.34` }));
+            lg.append(svgEl('stop', { offset: '0%', style: `stop-color:${s.color};stop-opacity:${s.gradient ? .5 : .34}` }));
+            if (s.gradient) lg.append(svgEl('stop', { offset: '60%', style: `stop-color:${s.gradient[s.gradient.length - 1]};stop-opacity:.18` }));
             lg.append(svgEl('stop', { offset: '100%', style: `stop-color:${s.color};stop-opacity:0` }));
             defs.append(lg);
             const area = svgEl('path', { d: `${d}L${pts[pts.length - 1][0].toFixed(1)},${baseY}L${pts[0][0].toFixed(1)},${baseY}Z`, class: 'area', fill: `url(#${id})` });
             plot.append(area);
           }
-          const line = svgEl('path', { d, class: `line${s.dashed ? ' dashed' : ''}`, style: `stroke:${s.color};--d:${si * 120}ms` });
+          const line = svgEl('path', { d, class: `line${s.dashed ? ' dashed' : ''}${s.gradient ? ' glow' : ''}`, style: `stroke:${stroke};--d:${si * 120}ms` });
           plot.append(line);
         }
         if (seg.length === 1 || (o.dots && !s.dashed)) {
           seg.forEach((i) => plot.append(svgEl('circle', { cx: x(i), cy: y(s.values[i]), r: seg.length === 1 ? 3.2 : 2.4, class: 'pt', style: `fill:${s.color}` })));
         }
+        if (s.gradient && seg.length && seg[seg.length - 1] === last) {
+          // 最新一點：發光圓點
+          const [cx, cy] = pts[pts.length - 1];
+          plot.append(svgEl('circle', { cx, cy, r: 10, class: 'pt-halo', style: `fill:${s.color}` }));
+          plot.append(svgEl('circle', { cx, cy, r: 4.5, class: 'pt-end', style: `fill:${s.color}` }));
+        }
         seg = [];
       };
-      s.values.forEach((v, i) => { if (v == null) flush(); else seg.push(i); });
+      s.values.forEach((v, i) => { if (v == null) { if (!s.connect) flush(); } else seg.push(i); });
       flush();
     });
 

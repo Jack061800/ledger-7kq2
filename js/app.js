@@ -5,6 +5,8 @@
   const { Store, Calc, CSV, D, PALETTE, parseAmount, buildDemoState, normalizeState } = window.GCT;
   const Charts = window.GCTCharts;
   const Team = window.GCTTeam;
+  // 主要趨勢線：藍色漸層（總庫存、總 Sales）
+  const BLUE = { color: '#3b82f6', gradient: ['#67e8f9', '#3b82f6', '#7c6cff'] };
 
   /* ================= 小工具 ================= */
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -745,7 +747,7 @@
       const stock = Calc.totalStock(ids, dates);
       Charts.lineChart($('#stockChart', view), {
         dates, height: 260, ariaLabel: '每日總庫存趨勢', smooth: true,
-        series: [{ name: '總庫存', color: 'var(--primary)', values: stock.map((p) => p.value), area: true }],
+        series: [{ name: '總庫存', ...BLUE, values: stock.map((p) => p.value), area: true }],
         emptyText: '此期間所選帳號沒有任何記錄',
         tooltip: (i) => {
           const p = stock[i];
@@ -1210,7 +1212,7 @@
           </div>
         </div>
         <div class="an-chiprow">${chipHTML}<span class="grow"></span>
-          <span class="legend"><span class="legend-item"><span class="swatch" style="background:var(--primary)"></span>${range.label}</span>${ui.anCompare ? '<span class="legend-item"><span class="legend-dash"></span>前一期</span>' : ''}</span>
+          <span class="legend"><span class="legend-item"><span class="swatch swatch-blue"></span>${range.label}</span>${ui.anCompare ? '<span class="legend-item"><span class="legend-dash"></span>前一期</span>' : ''}</span>
         </div>
         <div id="anChart"></div>
         <div class="an-foot">
@@ -1246,15 +1248,15 @@
       labelFormat: labelFmt, ariaLabel: `${m.label}趨勢`,
       axisFormat: m.percent ? (v) => `${v}%` : undefined,
       series: [
-        ...(ui.anCompare ? [{ name: '前一期', color: 'var(--muted)', values: prevAligned, dashed: true }] : []),
-        { name: m.label, color: 'var(--primary)', values: curB.values, area: true },
+        ...(ui.anCompare ? [{ name: '前一期', color: 'var(--muted)', values: prevAligned, dashed: true, connect: true }] : []),
+        { name: m.label, ...BLUE, values: curB.values, area: true, connect: true },
       ],
       emptyText: '此期間沒有資料（Sales 需要至少記兩次 CF Bal 才算得出來）',
       tooltip: (i) => {
         const k = curB.keys[i];
         const recCount = curB.groups.get(k).reduce((s, j) => s + cur.rec[j], 0);
         return `<div class="tip-head">${tipLabel(k)}</div>
-          <div class="tip-row"><span><i class="swatch" style="background:var(--primary)"></i>${m.label}</span><b class="${m.signed ? deltaClass(curB.values[i]) : ''}">${anFmt(metric, curB.values[i])}</b></div>
+          <div class="tip-row"><span><i class="swatch swatch-blue"></i>${m.label}</span><b class="${m.signed ? deltaClass(curB.values[i]) : ''}">${anFmt(metric, curB.values[i])}</b></div>
           ${ui.anCompare ? `<div class="tip-row"><span><i class="legend-dash"></i>前一期</span><b>${anFmt(metric, prevAligned[i])}</b></div>` : ''}
           <div class="tip-note">${recCount} 筆記錄${curB.values[i] == null && metric !== 'completion' ? '，沒有可計算的資料（不當成 0）' : ''}</div>`;
       },

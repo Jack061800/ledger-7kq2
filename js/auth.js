@@ -175,7 +175,7 @@
     gate.setAttribute('aria-label', '登入貨幣帳本');
     gate.innerHTML = `
       <div class="auth-card">
-        <span class="brand-mark auth-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V6.5"/><path d="M5 12v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V12"/></svg></span>
+        <span class="brand-mark auth-mark" aria-hidden="true"><img src="icons/logo-128.png" alt=""></span>
         <h1>貨幣帳本</h1>
         <p class="auth-sub">用你的 Google 帳號登入，手機和電腦看到同一份資料</p>
         <button type="button" class="google-btn" data-login>${GOOGLE_G}<span>使用 Google 登入</span></button>
