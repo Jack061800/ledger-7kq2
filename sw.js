@@ -1,6 +1,6 @@
 /* 離線快取：App 本身的檔案先存起來，沒有網路也能開啟
  * 更新程式時把 VERSION 改掉，手機下次連上網就會換成新版 */
-const VERSION = 'v7';
+const VERSION = 'v8';
 const APP_CACHE = `gct-app-${VERSION}`;
 const FONT_CACHE = 'gct-fonts';
 const APP_FILES = [
@@ -20,6 +20,7 @@ const APP_FILES = [
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
   './icons/favicon-32.png',
+  './icons/logo-128.png',
 ];
 
 self.addEventListener('install', (event) => {
