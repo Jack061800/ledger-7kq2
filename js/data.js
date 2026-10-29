@@ -7,6 +7,8 @@
 
   const STORAGE_KEY = 'gct:data:v1';
   const PREV_KEY = 'gct:data:before-restore';
+  const OWNER_KEY = 'gct:data:owner';
+  const USER_KEY = 'gct:data:user:';
   const SCHEMA_VERSION = 1;
   const MAX_AMOUNT = 999999999999999;
   // 帳號顏色（依建立順序固定給每個帳號，不隨排名改變）
@@ -301,9 +303,45 @@
 
     onChange(fn) { this._listeners.push(fn); },
 
+    // 本機資料屬於哪個 Gmail：換帳號登入時，把上一個人的資料收起來，換成這個人的（之後由雲端同步補齊）
+    claim(email) {
+      try {
+        const owner = localStorage.getItem(OWNER_KEY);
+        if (owner && owner !== email) {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) localStorage.setItem(`${USER_KEY}${owner}`, raw);
+          const mine = localStorage.getItem(`${USER_KEY}${email}`);
+          if (mine) { localStorage.setItem(STORAGE_KEY, mine); localStorage.removeItem(`${USER_KEY}${email}`); } else localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem('gct:sync:lastAt');
+        }
+        localStorage.setItem(OWNER_KEY, email);
+      } catch (_) { /* 無法存取儲存空間時 load() 會提示 */ }
+    },
+
+    /* 唯讀檢視（管理員看朋友的帳本）：暫時把畫面換成別人的資料，不寫入本機，也不同步 */
+    readOnly: false,
+    viewing: null,
+    enterView(state, who) {
+      this.state = normalizeState(state);
+      this.readOnly = true;
+      this.viewing = who;
+      this._derived = null;
+      this.lastSource = 'view';
+      this._listeners.forEach((fn) => fn('view'));
+    },
+    exitView() {
+      if (!this.readOnly) return;
+      this.readOnly = false;
+      this.viewing = null;
+      this.load();
+      this.lastSource = 'view';
+      this._listeners.forEach((fn) => fn('view'));
+    },
+
     // 所有寫入都經過這裡：失敗時還原記憶體中的狀態，避免畫面與儲存不一致
     // source：'local'（使用者操作）或 'sync'（雲端同步帶進來的），讓監聽者分辨
     _commit(mutator, source = 'local') {
+      if (this.readOnly) throw new Error('正在看別人的帳本（只能看），不能修改。請先按「回到我的帳本」。');
       const before = JSON.stringify(this.state);
       let result;
       try {

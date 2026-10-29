@@ -4,6 +4,7 @@
 
   const { Store, Calc, CSV, D, PALETTE, parseAmount, buildDemoState, normalizeState } = window.GCT;
   const Charts = window.GCTCharts;
+  const Team = window.GCTTeam;
 
   /* ================= 小工具 ================= */
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -19,6 +20,9 @@
     const r = Math.round(n);
     return r > 0 ? '+' + fmtAbs(r) : r < 0 ? '−' + fmtAbs(-r) : '0';
   };
+  // 結算金額（馬幣，兩位小數）
+  const rmf = new Intl.NumberFormat('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtRM = (n) => (n == null ? '—' : `${n < 0 ? '-' : ''}RM ${rmf.format(Math.abs(n))}`);
   const deltaClass = (n) => (n == null ? 'muted' : Math.round(n) > 0 ? 'pos' : Math.round(n) < 0 ? 'neg' : 'zero');
   const delta = (n, suffix = '') => `<span class="delta ${deltaClass(n)}">${fmtSigned(n)}${n == null ? '' : suffix}</span>`;
   const cur = () => esc(Store.state.settings.currencyName || '貨幣');
@@ -79,6 +83,10 @@
     refresh: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>',
     ship: '<path d="M2.5 6.5h11v9.5h-11z"/><path d="M13.5 9.5h4l3 3.2v3.3h-7"/><circle cx="6.5" cy="17.8" r="1.7"/><circle cx="17" cy="17.8" r="1.7"/>',
     share: '<path d="M12 15V3"/><path d="m8 7 4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>',
+    settle: '<rect x="2.5" y="6" width="19" height="12.5" rx="2.5"/><circle cx="12" cy="12.25" r="2.6"/><path d="M6 9.5v.01M18 15v.01"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/>',
+    eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+    tag: '<path d="M3.5 12.5V4.5a1 1 0 0 1 1-1h8l8 8-9 9Z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
   };
   const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
@@ -209,6 +217,7 @@
     { id: 'entry', label: '每日錄入', short: '錄入', icon: 'entry', sub: '每天填各帳號的 CF Bal 和出貨' },
     { id: 'records', label: '記錄', icon: 'records', sub: '搜尋、排序、編輯每一筆每日記錄' },
     { id: 'accounts', label: '帳號', icon: 'accounts', sub: '新增、編輯、停用你的遊戲帳號' },
+    { id: 'settle', label: '結算', icon: 'settle', sub: '出貨定價、付款和欠款餘額（RM）' },
     { id: 'settings', label: '設定與備份', short: '設定', icon: 'settings', sub: '貨幣名稱、備份還原、匯入匯出' },
   ];
 
@@ -359,8 +368,9 @@
   const Sync = window.GCTSync;
   const SYNC_TEXT = {
     idle: '準備同步', syncing: '同步中…', ok: '已同步', offline: '離線中，連線後自動同步',
-    auth: '需要重新登入 Google 才能同步', error: '同步失敗', off: '未啟用雲端同步',
+    auth: '需要重新登入 Google 才能同步', denied: '沒有使用權限', error: '同步失敗', off: '未啟用雲端同步',
   };
+  const syncBad = (st) => st === 'error' || st === 'auth' || st === 'denied';
   const syncAgo = () => {
     if (!Sync || !Sync.lastAt) return '尚未同步過';
     const m = Math.round((Date.now() - Sync.lastAt) / 60000);
@@ -371,14 +381,14 @@
     if (btn && Sync) {
       const st = Sync.status;
       btn.className = `round-btn sync-btn is-${st}`;
-      btn.innerHTML = `${icon(st === 'offline' || st === 'auth' || st === 'error' ? 'cloudOff' : st === 'syncing' ? 'refresh' : 'cloud')}${st === 'auth' || st === 'error' ? '<span class="dot-badge is-dot"></span>' : ''}`;
-      const tip = Sync.message && (st === 'error' || st === 'auth') ? Sync.message : `${SYNC_TEXT[st] || ''}（${syncAgo()}）`;
+      btn.innerHTML = `${icon(st === 'offline' || syncBad(st) ? 'cloudOff' : st === 'syncing' ? 'refresh' : 'cloud')}${syncBad(st) ? '<span class="dot-badge is-dot"></span>' : ''}`;
+      const tip = Sync.message && syncBad(st) ? Sync.message : `${SYNC_TEXT[st] || ''}（${syncAgo()}）`;
       btn.title = tip;
       btn.setAttribute('aria-label', tip);
     }
     const box = $('#syncStatusBox');
     if (box && Sync) {
-      box.innerHTML = `<span class="sync-dot is-${Sync.status}"></span><b>${SYNC_TEXT[Sync.status] || ''}</b><small>${esc(Sync.status === 'error' || Sync.status === 'auth' ? Sync.message : syncAgo())}</small>`;
+      box.innerHTML = `<span class="sync-dot is-${Sync.status}"></span><b>${SYNC_TEXT[Sync.status] || ''}</b><small>${esc(syncBad(Sync.status) ? Sync.message : syncAgo())}</small>`;
       const again = $('#syncAuthBtn');
       if (again) again.hidden = Sync.status !== 'auth';
     }
@@ -422,9 +432,11 @@
       <button type="button" class="theme-sw-btn ${theme === 'light' ? 'active' : ''}" data-theme-set="light" data-label="淺色模式" aria-label="淺色模式" aria-pressed="${theme === 'light'}">${icon('sun')}<span class="nav-label">淺色</span></button>
       <button type="button" class="theme-sw-btn ${theme === 'dark' ? 'active' : ''}" data-theme-set="dark" data-label="深色模式" aria-label="深色模式" aria-pressed="${theme === 'dark'}">${icon('moon')}<span class="nav-label">深色</span></button>`;
 
+    const toPrice = Team ? Team.pendingTotal() : 0;
     const item = (n, cls) => `<a href="#/${n.id}" class="${cls} ${n.id === active ? 'active' : ''}" ${n.id === active ? 'aria-current="page"' : ''} ${cls === 'nav-item' ? `data-label="${n.label}"` : ''} aria-label="${n.label}">
       ${icon(n.icon)}<span class="nav-label">${cls === 'tab' ? (n.short || n.label) : n.label}</span>
-      ${n.id === 'entry' && pending ? `<span class="nav-badge" title="今天尚未記錄的帳號">${pending}</span>` : ''}</a>`;
+      ${n.id === 'entry' && pending ? `<span class="nav-badge" title="今天尚未記錄的帳號">${pending}</span>` : ''}
+      ${n.id === 'settle' && toPrice ? `<span class="nav-badge" title="待定價的出貨">${toPrice}</span>` : ''}</a>`;
     $('#nav').innerHTML = NAV.map((n) => item(n, 'nav-item')).join('');
     $('#tabbar').innerHTML = NAV.map((n) => item(n, 'tab')).join('');
     updateSyncIndicator();
@@ -451,8 +463,11 @@
     renderChrome(name);
     renderPageHead(nav, enter);
     $('#pageActions').innerHTML = '';
-    $('#globalBanner').innerHTML = Store.loadError
-      ? `<div class="notice notice-error">${icon('alert')}<div><b>資料讀取問題</b><p>${esc(Store.loadError)}</p></div></div>` : '';
+    document.documentElement.classList.toggle('is-readonly', Store.readOnly);
+    $('#globalBanner').innerHTML = (Store.readOnly
+      ? `<div class="notice notice-view">${icon('eye')}<div><b>正在看 ${esc(Store.viewing ? Store.viewing.name : '')} 的帳本</b><p>只能看，不能改。這裡的數字都是他的資料。</p></div><button type="button" class="btn btn-sm btn-primary" data-action="exit-view">回到我的帳本</button></div>` : '')
+      + (Store.loadError
+        ? `<div class="notice notice-error">${icon('alert')}<div><b>資料讀取問題</b><p>${esc(Store.loadError)}</p></div></div>` : '');
     const view = $('#view');
     try {
       PAGES[name](view, params);
@@ -635,8 +650,8 @@
       }
       const last = Store.state.settings.lastBackupAt;
       const days = last ? D.daysBetween(D.toISO(new Date(last)), today) : null;
-      if (Store.state.records.length && (days == null || days >= 7)) {
-        notices.push(`<div class="notice notice-warn">${icon('shield')}<div><b>${days == null ? '還沒有下載過備份' : `已 ${days} 天沒有備份`}</b><p>資料只存在這個瀏覽器，清除瀏覽資料或換裝置就會看不到。建議每週下載一次備份檔。</p></div><button type="button" class="btn btn-sm" data-action="backup">下載備份</button></div>`);
+      if (!Store.readOnly && Store.state.records.length && (days == null || days >= 7)) {
+        notices.push(`<div class="notice notice-warn">${icon('shield')}<div><b>${days == null ? '還沒有下載過備份' : `已 ${days} 天沒有備份`}</b><p>${Sync && Sync.enabled ? '雲端已經有一份；偶爾下載備份檔，多一層保險。' : '資料只存在這個瀏覽器，清除瀏覽資料或換裝置就會看不到。建議每週下載一次備份檔。'}</p></div><button type="button" class="btn btn-sm" data-action="backup">下載備份</button></div>`);
       }
       $('#dashNotices', view).innerHTML = notices.join('');
 
@@ -866,6 +881,9 @@
   }
 
   // 只記出貨：選帳號 → 打數量 → 儲存。出貨會加回 Sales，不會算成少賺
+  // 朋友自己的出貨：管理員已經填了單價（算進欠款）就不能再刪
+  const shipPriced = (id) => !!(Team && Team.enabled && !Team.isAdmin() && !Store.readOnly && Team.isPriced(Team.me(), id));
+
   function openShipModal({ accountId = '', date = '' } = {}) {
     const accts = activeAccounts();
     if (!accts.length) { toast('請先新增帳號', 'info'); location.hash = '#/accounts'; return; }
@@ -903,11 +921,12 @@
         <ul class="ship-list">${list.slice(0, 8).map((s) => `<li>
           <span class="ship-date">${fmtDate(s.date)}</span>
           <span class="ship-amt">${fmt(s.amount)}</span>
-          <span class="ship-note">${esc(s.note)}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}</span>
+          <span class="ship-note">${esc(s.note)}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}${shipPriced(s.id) ? '<span class="tag tag-ok">已定價</span>' : ''}</span>
           <button type="button" class="icon-btn danger" data-del-ship="${s.id}" aria-label="刪除這筆出貨" title="刪除">${icon('trash')}</button></li>`).join('')}</ul>` : '';
       $$('[data-del-ship]', m.el).forEach((b) => b.addEventListener('click', async () => {
         const s = Store.state.shipments.find((x) => x.id === b.dataset.delShip);
         if (!s) return;
+        if (shipPriced(s.id)) { toast('這筆出貨已經定價，不能刪除。要改的話，請管理員先在「結算」取消定價。', 'info'); return; }
         const ok = await confirmDialog({ title: '刪除出貨', message: `確定刪除 ${esc(Store.account(s.accountId).name)} ${fmtDate(s.date)} 的出貨 <b>${fmt(s.amount)}</b>？`, confirmText: '刪除', danger: true });
         if (!ok) return;
         safely(() => { Store.deleteShipment(s.id); toast('已刪除出貨'); });
@@ -1913,16 +1932,18 @@
         ${window.GCTAuth && window.GCTAuth.enabled ? (() => {
           const s = window.GCTAuth.session();
           return `<section class="card">
-            <header class="card-head"><div><h3>Google 帳號與雲端同步</h3><p class="card-sub">資料存在你的 Google 雲端硬碟（App 專用隱藏資料夾），手機和電腦登入同一個帳號就會看到同一份</p></div></header>
+            <header class="card-head"><div><h3>Google 帳號與雲端同步</h3><p class="card-sub">資料存在 App 的雲端資料庫，手機和電腦登入同一個帳號就會看到同一份${s && s.admin ? '' : '；管理員也看得到（只能看）'}</p></div></header>
             <div class="sync-status" id="syncStatusBox"></div>
             <div class="action-list">
               <div class="action-item"><div><b>立即同步</b><small>平常存檔後會自動同步；打開 App、回到畫面、重新連上網路時也會同步。</small></div>
                 <div class="btn-pair"><button type="button" class="btn btn-sm btn-primary" id="syncAuthBtn" hidden>重新登入 Google</button><button type="button" class="btn btn-sm" data-action="sync">${icon('refresh')}同步</button></div></div>
-              <div class="action-item"><div><b>${esc(s ? s.email : '—')}</b><small>${s ? `登入有效到 ${fmtDate(D.toISO(new Date(s.exp)))}，到期後需再登入一次` : ''}</small></div>
+              <div class="action-item"><div><b>${esc(s ? s.email : '—')}${s && s.admin ? ' <span class="tag tag-ok">管理員</span>' : ''}</b><small>${s ? `登入有效到 ${fmtDate(D.toISO(new Date(s.exp)))}，到期後需再登入一次` : ''}</small></div>
                 <button type="button" class="btn btn-sm" id="logoutBtn">登出</button></div>
             </div>
           </section>`;
         })() : ''}
+
+        ${Team && Team.enabled && Team.isAdmin() ? usersCard() : ''}
 
         <section class="card">
           <header class="card-head"><div><h3>安裝到手機</h3><p class="card-sub">${isStandalone() ? '目前是從主畫面以 App 模式開啟 ✓' : '目前是在瀏覽器中開啟'}</p></div></header>
@@ -2011,12 +2032,313 @@
       safely(() => { Store.restorePrevious(); toast('已復原先前的資料'); });
     });
     $('#clearBtn', view).addEventListener('click', clearFlow);
+    bindUsersCard(view);
+  }
+
+  /* ---------- 使用者管理（管理員） ---------- */
+  const GCP_TEST_USERS = 'https://console.cloud.google.com/auth/audience?project=coin-ledger-512414';
+  function usersCard() {
+    const users = Team.users;
+    return `<section class="card" id="usersCard">
+      <header class="card-head"><div><h3>使用者</h3><p class="card-sub">可以登入的 Gmail。每個人有自己的帳本，你可以看（不能改），他們的出貨會到「結算」等你定價。</p></div></header>
+      <form class="form user-add" id="userAddForm" novalidate>
+        <div class="form-row">
+          <div class="field"><label for="ua-email">Gmail</label><input id="ua-email" name="email" class="input" type="email" inputmode="email" autocomplete="off" placeholder="friend@gmail.com"><span class="field-error"></span></div>
+          <div class="field"><label for="ua-name">名稱</label><input id="ua-name" name="name" class="input" maxlength="40" placeholder="選填，例如 阿成"><span class="field-error"></span></div>
+        </div>
+        <button type="submit" class="btn btn-primary">${icon('users')}加入</button>
+      </form>
+      <div class="notice notice-info compact">${icon('info')}<div><p>加入後，還要到 <a href="${GCP_TEST_USERS}" target="_blank" rel="noopener">Google Cloud → 目標對象 → 測試使用者</a> 加上同一個 Gmail，對方才能登入。</p></div></div>
+      ${users.length ? `<ul class="user-list">${users.map((u) => `<li>
+          <span class="avatar" style="--c:var(--c${(u.email.length % 8) + 1})">${esc(initials(u.name || u.email))}</span>
+          <span class="grow"><b>${esc(u.name || u.email.split('@')[0])}</b><small>${esc(u.email)}</small></span>
+          <button type="button" class="btn btn-sm btn-ghost" data-action="view-ledger" data-email="${esc(u.email)}">${icon('eye')}<span class="btn-label">看帳本</span></button>
+          <button type="button" class="icon-btn" data-user-rename="${esc(u.email)}" aria-label="改名稱" title="改名稱">${icon('edit')}</button>
+          <button type="button" class="icon-btn danger" data-user-remove="${esc(u.email)}" aria-label="移除" title="移除">${icon('trash')}</button></li>`).join('')}</ul>`
+    : `<p class="muted user-empty">${Team.loading ? '讀取中…' : '還沒有加入任何人。'}</p>`}
+      ${Team.error ? `<p class="warn-text">${esc(Team.error)}</p>` : ''}
+    </section>`;
+  }
+
+  function bindUsersCard(view) {
+    const form = $('#userAddForm', view);
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const v = Team.validateEmail(form.email.value);
+      if (v.error) { setFieldErrors(form, { email: v.error }); return; }
+      const btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      try {
+        await Team.addUser(v.email, form.name.value);
+        toast(`已加入 ${v.email}。記得也到 Google Cloud 加測試使用者。`);
+        render(false);
+      } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    });
+    $$('[data-user-remove]', view).forEach((b) => b.addEventListener('click', async () => {
+      const email = b.dataset.userRemove;
+      const ok = await confirmDialog({ title: '移除使用者', message: `移除後 <b>${esc(email)}</b> 就不能再登入。<br>他的帳本和結算紀錄會保留，之後再加回來就會看到。`, confirmText: '移除', danger: true });
+      if (!ok) return;
+      try { await Team.removeUser(email); toast('已移除'); render(false); } catch (err) { toast(err.message, 'error'); }
+    }));
+    $$('[data-user-rename]', view).forEach((b) => b.addEventListener('click', () => {
+      const u = Team.user(b.dataset.userRename);
+      if (!u) return;
+      const m = openModal({
+        title: '改名稱', size: 'modal-sm',
+        body: `<form class="form" id="urForm" novalidate><div class="field"><label for="ur-name">${esc(u.email)}</label><input id="ur-name" name="name" class="input" maxlength="40" value="${esc(u.name)}" placeholder="例如 阿成"><span class="field-error"></span></div></form>`,
+        footer: '<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-ok>儲存</button>',
+      });
+      const save = async () => {
+        try { await Team.renameUser(u.email, $('#ur-name', m.el).value); m.close(); toast('已更新名稱'); render(false); } catch (err) { toast(err.message, 'error'); }
+      };
+      $('[data-ok]', m.el).addEventListener('click', save);
+      $('#urForm', m.el).addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    }));
+  }
+
+  // 管理員：切換去看某位朋友的帳本（只能看）
+  async function viewLedger(email) {
+    if (!navigator.onLine) { toast('看朋友的帳本需要網路', 'info'); return; }
+    toast('讀取中…', 'info');
+    try {
+      const state = await Team.loadFullLedger(email);
+      if (!state) { toast(`${Team.nameOf(email)} 還沒有任何資料（可能還沒登入過）`, 'info'); return; }
+      nextRenderEnter = true;
+      Store.enterView(state, { email, name: Team.nameOf(email) });
+      location.hash = '#/dashboard';
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  /* ================= 結算 ================= */
+  function renderSettle(view, params) {
+    if (!Team || !Team.enabled) {
+      view.innerHTML = emptyState({ iconName: 'settle', title: '結算要登入後才能用', text: '在正式網址用 Google 登入後，朋友的出貨會出現在這裡，由管理員填單價、記付款。' });
+      return;
+    }
+    if (Team.isAdmin()) {
+      const email = params.get('u');
+      if (email && Team.user(email)) renderSettleDetail(view, email); else renderSettleOverview(view);
+    } else {
+      renderSettleMine(view);
+    }
+  }
+
+  const settleTiles = (sum, labels) => `<div class="kpi-grid settle-kpis">
+      ${kpiCard({ ic: 'settle', tone: 'blue', label: labels.owed, value: fmtRM(sum.owed), sub: `已定價 ${fmt(sum.count - sum.pending)} 筆出貨` })}
+      ${kpiCard({ ic: 'check', tone: 'green', label: labels.paid, value: fmtRM(sum.paid), sub: '付款紀錄合計' })}
+      ${kpiCard({ ic: 'coin', tone: sum.balance > 0 ? 'rose' : 'teal', label: labels.balance, value: fmtRM(sum.balance), sub: sum.balance > 0 ? '總金額 − 已付' : sum.balance < 0 ? '多付了' : '已結清' })}
+      ${kpiCard({ ic: 'tag', tone: sum.pending ? 'gold' : 'violet', label: '待定價', value: `${fmt(sum.pending)} 筆`, sub: sum.pending ? `共 ${fmt(sum.pendingAmount)} 還沒算錢` : '全部都定價了' })}
+    </div>`;
+
+  const loadingNote = () => (Team.loading ? `<p class="muted settle-sync">${icon('refresh')}更新中…</p>`
+    : Team.error ? `<p class="warn-text settle-sync">${icon('alert')}${esc(Team.error)}</p>`
+      : Team.loadedAt ? `<p class="muted settle-sync">${icon('cloud')}${Math.round((Date.now() - Team.loadedAt) / 60000) < 1 ? '剛剛更新' : `${Math.round((Date.now() - Team.loadedAt) / 60000)} 分鐘前更新`}</p>` : '');
+
+  function shipRowsHtml(rows, { admin, email }) {
+    if (!rows.length) return `<p class="muted settle-empty">還沒有出貨紀錄。${admin ? '' : '在「總覽」按「出貨」記一筆，就會出現在這裡。'}</p>`;
+    return `<ul class="settle-list">${rows.map((r) => `<li class="${r.price == null ? 'is-pending' : ''}">
+        <span class="sl-date">${fmtDate(r.date)}</span>
+        <span class="sl-acct">${r.account ? `${swatch(r.account)}${esc(r.account.name)}` : '<span class="muted">已刪除的帳號</span>'}</span>
+        <span class="sl-amt">${fmt(r.amount)}</span>
+        <span class="sl-note">${esc(r.note)}</span>
+        <span class="sl-price">${r.price == null ? '<span class="tag tag-warn">待定價</span>' : `<small>RM ${rmf.format(r.price)} / 1B</small><b>${fmtRM(r.money)}</b>`}</span>
+        ${admin ? `<button type="button" class="btn btn-sm ${r.price == null ? 'btn-primary' : 'btn-ghost'}" data-price="${esc(r.id)}" data-email="${esc(email)}">${r.price == null ? '定價' : '改'}</button>` : ''}
+      </li>`).join('')}</ul>`;
+  }
+
+  function paymentsHtml(st, { admin, email }) {
+    const list = (st.payments || []).slice().sort((a, b) => (a.date === b.date ? (a.at < b.at ? 1 : -1) : a.date < b.date ? 1 : -1));
+    return `<section class="card">
+      <header class="card-head"><div><h3>付款紀錄</h3><p class="card-sub">${admin ? '每次付錢給他，記一筆就會從欠款扣掉' : '管理員每次付款都會記在這裡'}</p></div>
+        ${admin ? `<button type="button" class="btn btn-sm btn-primary" data-pay="${esc(email)}">${icon('plus')}記一筆付款</button>` : ''}</header>
+      ${list.length ? `<ul class="pay-list">${list.map((p) => `<li>
+          <span class="sl-date">${fmtDate(p.date)}</span>
+          <b class="pay-amt">${fmtRM(p.amount)}</b>
+          <span class="sl-note">${esc(p.note)}</span>
+          ${admin ? `<button type="button" class="icon-btn danger" data-pay-del="${esc(p.id)}" data-email="${esc(email)}" aria-label="刪除這筆付款" title="刪除">${icon('trash')}</button>` : ''}</li>`).join('')}</ul>`
+    : '<p class="muted settle-empty">還沒有付款紀錄。</p>'}
+    </section>`;
+  }
+
+  function renderSettleOverview(view) {
+    const users = Team.users;
+    $('#pageActions').innerHTML = `<button type="button" class="btn" data-action="team-refresh">${icon('refresh')}更新</button><a class="btn" href="#/settings">${icon('users')}管理使用者</a>`;
+    if (!users.length) {
+      view.innerHTML = emptyState({ iconName: 'users', title: Team.loading ? '讀取中…' : '還沒有加入任何人', text: '到「設定 → 使用者」加入朋友的 Gmail。他們登入後記的出貨，會出現在這裡等你定價。', actions: `<a class="btn btn-primary" href="#/settings">${icon('users')}管理使用者</a>` });
+      return;
+    }
+    const sums = users.map((u) => ({ u, s: Team.summary(u.email, Team.sourceFor(u.email)) }));
+    const total = sums.reduce((t, x) => ({ owed: t.owed + x.s.owed, paid: t.paid + x.s.paid, balance: t.balance + x.s.balance, pending: t.pending + x.s.pending, pendingAmount: t.pendingAmount + x.s.pendingAmount, count: t.count + x.s.count }), { owed: 0, paid: 0, balance: 0, pending: 0, pendingAmount: 0, count: 0 });
+    view.innerHTML = `
+      ${settleTiles(total, { owed: '出貨總金額', paid: '已付', balance: '你還欠' })}
+      <section class="card">
+        <header class="card-head"><div><h3>每個人</h3><p class="card-sub">點進去填單價、記付款</p></div>${loadingNote()}</header>
+        <ul class="friend-list">${sums.map(({ u, s }) => `<li><a href="#/settle?u=${encodeURIComponent(u.email)}">
+          <span class="avatar" style="--c:var(--c${(u.email.length % 8) + 1})">${esc(initials(u.name || u.email))}</span>
+          <span class="grow"><b>${esc(u.name || u.email.split('@')[0])}</b><small>${esc(u.email)}</small></span>
+          ${s.pending ? `<span class="tag tag-warn">${s.pending} 筆待定價</span>` : ''}
+          <span class="fl-bal"><small>你還欠</small><b class="${s.balance > 0 ? 'neg' : ''}">${fmtRM(s.balance)}</b></span>
+          ${icon('right', 'icon-sm')}</a></li>`).join('')}</ul>
+      </section>`;
+  }
+
+  function renderSettleDetail(view, email) {
+    const u = Team.user(email);
+    const source = Team.sourceFor(email);
+    const sum = Team.summary(email, source);
+    const rows = Team.rows(email, source);
+    const st = Team.settle[email] || { prices: {}, payments: [] };
+    const showAll = ui.settleShow !== 'pending';
+    const shown = showAll ? rows : rows.filter((r) => r.price == null);
+    $('#pageActions').innerHTML = `<a class="btn" href="#/settle">${icon('left')}全部人</a>
+      <button type="button" class="btn" data-action="view-ledger" data-email="${esc(email)}">${icon('eye')}看他的帳本</button>`;
+    view.innerHTML = `
+      <div class="settle-who"><span class="avatar avatar-lg" style="--c:var(--c${(email.length % 8) + 1})">${esc(initials(u.name || email))}</span>
+        <div><h2>${esc(u.name || email.split('@')[0])}</h2><p class="muted">${esc(email)}</p></div>${loadingNote()}</div>
+      ${settleTiles(sum, { owed: '出貨總金額', paid: '已付給他', balance: '你還欠他' })}
+      <section class="card">
+        <header class="card-head"><div><h3>出貨</h3><p class="card-sub">單價以每 1B 多少 RM 計；金額 = 數量 ÷ 1B × 單價</p></div>
+          <div class="btn-pair">
+            <div class="seg" data-seg="settle-show" role="group" aria-label="顯示">
+              <button type="button" class="seg-btn ${!showAll ? 'active' : ''}" data-settle-show="pending">待定價（${sum.pending}）</button>
+              <button type="button" class="seg-btn ${showAll ? 'active' : ''}" data-settle-show="all">全部（${rows.length}）</button>
+            </div>
+            ${sum.pending > 1 ? `<button type="button" class="btn btn-sm" data-price-all="${esc(email)}">${icon('tag')}全部待定價一起定</button>` : ''}
+          </div></header>
+        ${shipRowsHtml(shown, { admin: true, email })}
+      </section>
+      ${paymentsHtml(st, { admin: true, email })}`;
+    $$('[data-settle-show]', view).forEach((b) => b.addEventListener('click', () => { ui.settleShow = b.dataset.settleShow; saveUI(); render(false); }));
+    bindSettleActions(view);
+  }
+
+  function renderSettleMine(view) {
+    const me = Team.me();
+    const source = Store.state; // 自己的出貨一律以本機帳本為準（剛記的也看得到）
+    const sum = Team.summary(me, source);
+    const rows = Team.rows(me, source);
+    $('#pageActions').innerHTML = `<button type="button" class="btn" data-action="team-refresh">${icon('refresh')}更新</button>
+      <button type="button" class="btn btn-ship" data-action="ship">${icon('ship')}出貨</button>`;
+    view.innerHTML = `
+      ${settleTiles(sum, { owed: '出貨總金額', paid: '已收到', balance: '還欠你' })}
+      <section class="card">
+        <header class="card-head"><div><h3>我的出貨</h3><p class="card-sub">用「出貨」按鈕記的每一筆。管理員填好單價（每 1B 多少 RM）後就會算出金額。</p></div>${loadingNote()}</header>
+        ${shipRowsHtml(rows, { admin: false, email: me })}
+      </section>
+      ${paymentsHtml(Team.settle[me] || { payments: [] }, { admin: false, email: me })}`;
+  }
+
+  function bindSettleActions(view) {
+    $$('[data-price]', view).forEach((b) => b.addEventListener('click', () => openPriceModal(b.dataset.email, [b.dataset.price])));
+    $$('[data-price-all]', view).forEach((b) => b.addEventListener('click', () => {
+      const email = b.dataset.priceAll;
+      openPriceModal(email, Team.rows(email, Team.sourceFor(email)).filter((r) => r.price == null).map((r) => r.id));
+    }));
+    $$('[data-pay]', view).forEach((b) => b.addEventListener('click', () => openPaymentModal(b.dataset.pay)));
+    $$('[data-pay-del]', view).forEach((b) => b.addEventListener('click', async () => {
+      const email = b.dataset.email;
+      const p = (Team.settle[email] || { payments: [] }).payments.find((x) => x.id === b.dataset.payDel);
+      if (!p) return;
+      const ok = await confirmDialog({ title: '刪除付款', message: `確定刪除 ${fmtDate(p.date)} 的付款 <b>${fmtRM(p.amount)}</b>？`, confirmText: '刪除', danger: true });
+      if (!ok) return;
+      try { await Team.deletePayment(email, p.id); toast('已刪除付款'); } catch (err) { toast(err.message, 'error'); }
+    }));
+  }
+
+  // 單價：每 1B 多少 RM，最多 4 位小數
+  function parsePrice(raw) {
+    const t = String(raw || '').replace(/[,\s]|RM/gi, '');
+    if (!t) return { error: '請輸入單價' };
+    if (!/^\d+(\.\d{1,4})?$|^\.\d{1,4}$/.test(t)) return { error: '請輸入數字，最多 4 位小數' };
+    const v = Number(t);
+    return v > 1e6 ? { error: '單價太大了，請檢查' } : { value: v };
+  }
+  function parseRM(raw) {
+    const t = String(raw || '').replace(/[,\s]|RM/gi, '');
+    if (!t) return { error: '請輸入金額' };
+    if (!/^\d+(\.\d{1,2})?$|^\.\d{1,2}$/.test(t)) return { error: '請輸入金額，最多 2 位小數' };
+    const v = Number(t);
+    return v <= 0 ? { error: '金額要大於 0' } : v > 1e9 ? { error: '金額太大了，請檢查' } : { value: v };
+  }
+
+  function openPriceModal(email, ids) {
+    const all = Team.rows(email, Team.sourceFor(email));
+    const rows = all.filter((r) => ids.includes(r.id));
+    if (!rows.length) return;
+    const single = rows.length === 1 ? rows[0] : null;
+    const qty = rows.reduce((t, r) => t + r.amount, 0);
+    // 預設帶上一次用的單價
+    const lastPrice = single && single.price != null ? single.price : (all.filter((r) => r.price != null).sort((a, b) => (a.date < b.date ? 1 : -1))[0] || {}).price;
+    const m = openModal({
+      title: single ? '出貨定價' : `一起定價（${rows.length} 筆）`, size: 'modal-sm',
+      body: `<form class="form" id="priceForm" novalidate>
+        <div class="price-what">${single
+          ? `<b>${fmt(single.amount)}</b><span>${fmtDate(single.date)} · ${esc(single.account ? single.account.name : '')}${single.note ? ` · ${esc(single.note)}` : ''}</span>`
+          : `<b>${fmt(qty)}</b><span>${rows.length} 筆待定價的出貨合計</span>`}</div>
+        <div class="field"><label for="pf-price">單價（每 1B 多少 RM）</label>
+          <div class="input-affix"><span>RM</span><input id="pf-price" name="price" class="input input-xl" inputmode="decimal" autocomplete="off" value="${lastPrice != null ? lastPrice : ''}" placeholder="例如 30" data-autofocus><span>/ 1B</span></div>
+          <span class="field-error"></span></div>
+        <div class="calc-box"><span>金額</span><b id="pf-money">—</b></div>
+      </form>`,
+      footer: `${single && single.price != null ? '<button type="button" class="btn btn-danger-ghost" data-unprice>取消定價</button>' : ''}<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-ok>${icon('check')}儲存</button>`,
+    });
+    const form = $('#priceForm', m.el);
+    const upd = () => {
+      const r = parsePrice(form.price.value);
+      $('#pf-money', m.el).textContent = r.error ? '—' : fmtRM(rows.reduce((t, x) => t + Math.round((x.amount / Team.UNIT) * r.value * 100) / 100, 0));
+    };
+    form.price.addEventListener('input', upd); upd();
+    const save = async () => {
+      const r = parsePrice(form.price.value);
+      if (r.error) { setFieldErrors(form, { price: r.error }); return; }
+      const btn = $('[data-ok]', m.el); btn.disabled = true;
+      try { await Team.setPrices(email, rows.map((x) => x.id), r.value); m.close(); toast(single ? '已定價' : `已定價 ${rows.length} 筆`); } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    };
+    $('[data-ok]', m.el).addEventListener('click', save);
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    const un = $('[data-unprice]', m.el);
+    if (un) un.addEventListener('click', async () => {
+      try { await Team.setPrices(email, [single.id], null); m.close(); toast('已取消定價'); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
+  function openPaymentModal(email) {
+    const sum = Team.summary(email, Team.sourceFor(email));
+    const today = D.todayISO();
+    const m = openModal({
+      title: `付款給 ${Team.nameOf(email)}`, size: 'modal-sm',
+      body: `<form class="form" id="payForm" novalidate>
+        <p class="help">${icon('info')}<span>目前你還欠他 <b>${fmtRM(sum.balance)}</b>。</span></p>
+        <div class="field"><label for="pf-amt">金額（RM）</label>
+          <div class="input-affix"><span>RM</span><input id="pf-amt" name="amount" class="input input-xl" inputmode="decimal" autocomplete="off" value="${sum.balance > 0 ? sum.balance.toFixed(2) : ''}" data-autofocus></div>
+          <span class="field-error"></span></div>
+        <div class="form-row">
+          <div class="field"><label for="pf-note">備註</label><input id="pf-note" name="note" class="input" maxlength="200" placeholder="選填，例如 銀行轉帳"><span class="field-error"></span></div>
+          <div class="field"><label for="pf-date">日期</label><input type="date" id="pf-date" name="date" class="input" value="${today}" max="${today}"><span class="field-error"></span></div>
+        </div>
+      </form>`,
+      footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-ok>${icon('check')}記下付款</button>`,
+    });
+    const form = $('#payForm', m.el);
+    const save = async () => {
+      const r = parseRM(form.amount.value);
+      const date = D.normalizeDate(form.date.value);
+      const errs = {};
+      if (r.error) errs.amount = r.error;
+      if (!date) errs.date = '請選擇有效日期';
+      if (Object.keys(errs).length) { setFieldErrors(form, errs); return; }
+      const btn = $('[data-ok]', m.el); btn.disabled = true;
+      try { await Team.addPayment(email, { date, amount: r.value, note: form.note.value }); m.close(); toast(`已記下付款 ${fmtRM(r.value)}`); } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    };
+    $('[data-ok]', m.el).addEventListener('click', save);
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
   }
 
   function backupNow() {
     const payload = { app: 'game-currency-tracker', exportedAt: new Date().toISOString(), ...Store.state };
     download(`game-currency-backup-${D.todayISO()}.json`, JSON.stringify(payload, null, 2), 'application/json');
-    safely(() => Store.markBackup());
+    if (!Store.readOnly) safely(() => Store.markBackup());
     toast('已下載備份檔');
   }
 
@@ -2146,7 +2468,7 @@
   }
 
   /* ================= 啟動 ================= */
-  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, entry: renderEntry, records: renderRecords, accounts: renderAccounts, settings: renderSettings };
+  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, entry: renderEntry, records: renderRecords, accounts: renderAccounts, settle: renderSettle, settings: renderSettings };
   let nextRenderEnter = false;
 
   function focusRecordSearch() {
@@ -2188,6 +2510,12 @@
           else if (Sync.status === 'error') toast(`同步失敗：${Sync.message}`, 'error');
         });
         break;
+      case 'view-ledger': viewLedger(t.dataset.email); break;
+      case 'exit-view': nextRenderEnter = true; Store.exitView(); toast('已回到你的帳本'); break;
+      case 'team-refresh':
+        if (!navigator.onLine) { toast('目前沒有網路', 'info'); break; }
+        Team.refresh().then(() => { if (Team.error) toast(`更新失敗：${Team.error}`, 'error'); else toast('已更新'); });
+        break;
       case 'hide-install':
         ui.installHintHidden = true; saveUI();
         $$('.install-hint').forEach((el) => el.remove());
@@ -2210,8 +2538,19 @@
     render(enter);
   });
   // 同時開多個分頁時，其他分頁存檔後這裡跟著更新，避免舊資料把新資料蓋掉
+  // 結算資料更新：結算頁整頁重畫，其他頁只更新側欄徽章（避免打斷正在輸入的表單）
+  let teamTimer = null;
+  if (Team) Team.onChange(() => {
+    renderChrome(route().name);
+    if (route().name !== 'settle') return;
+    // 等剛按下儲存的對話框關完再重畫；還有對話框開著就不打斷
+    clearTimeout(teamTimer);
+    teamTimer = setTimeout(() => {
+      if (route().name === 'settle' && !$('#modalRoot').children.length) render(false);
+    }, 260);
+  });
   window.addEventListener('storage', (e) => {
-    if (e.key !== 'gct:data:v1') return;
+    if (e.key !== 'gct:data:v1' || Store.readOnly) return;
     Store.load();
     if (leaveGuard && leaveGuard()) { toast('資料已在其他分頁更新；這頁尚未儲存的輸入請重新確認', 'info'); return; }
     render(false);
@@ -2219,9 +2558,12 @@
   });
   // 有設定 Google 登入時，登入完成才載入資料與畫面
   syncThemeColor();
-  (window.GCTAuth ? window.GCTAuth.ready : Promise.resolve(null)).then(() => {
+  (window.GCTAuth ? window.GCTAuth.ready : Promise.resolve(null)).then((session) => {
+    if (session) Store.claim(session.email);
     Store.load();
+    if (Team) Team.init();
     render(true);
     if (Sync) Sync.start();
+    if (Team) Team.refresh();
   });
 })();

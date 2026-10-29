@@ -1,30 +1,35 @@
 /* Google（Gmail）登入
- * 1. 打開 App 時先確認是不是允許的 Google 帳號，才顯示內容。
- * 2. 同時取得「只能讀寫本 App 隱藏資料夾」的 Google 雲端硬碟權限（drive.appdata），
- *    讓手機、電腦用同一個 Gmail 登入時看到同一份資料。
- * 為了不把信箱公開在程式碼裡，這裡只放信箱的 SHA-256 雜湊值。 */
+ * 1. 打開 App 時先用 Google 登入，換成 Firebase 的登入憑證（之後讀寫雲端資料庫都用它）。
+ * 2. 管理員以外的帳號，要在雲端的允許名單（allow/{email}）裡才能進入；名單由管理員在「設定」管理。
+ * 3. 真正的權限由 Firebase 的安全規則把關（見 firestore.rules），這裡只是決定要不要顯示畫面。
+ * 為了不把信箱公開在程式碼裡，管理員信箱只放 SHA-256 雜湊值。 */
 (function (global) {
   'use strict';
 
   const CONFIG = {
     // Google Cloud 專案 coin-ledger → Google Auth Platform → 客戶端 → coin-ledger-web
     clientId: '53004788735-3vv53g58s8sio2up1irogcdtbdkhh1dt.apps.googleusercontent.com',
-    // 允許登入的信箱（小寫）之 SHA-256；可放多個
-    allowedEmailHashes: ['943b9780db53b026485335d8c02b847caeeac270d77f0d599c209b275f314b67'],
+    // Firebase 專案 coin-ledger-512414 → 專案設定 → 網頁應用程式 coin-ledger-web（apiKey 本來就是公開的，權限靠安全規則）
+    apiKey: 'AIzaSyDxr0iXDl8ycK4pNI8ZiYrEctcqEGDDxI8',
+    projectId: 'coin-ledger-512414',
+    // 管理員信箱（小寫）的 SHA-256
+    adminEmailHash: '943b9780db53b026485335d8c02b847caeeac270d77f0d599c209b275f314b67',
     // 只在正式網址啟用；本機雙擊 index.html 或 localhost 開發時不上鎖、不同步
     hosts: ['jack061800.github.io'],
     sessionDays: 30,
-    scope: 'openid email profile https://www.googleapis.com/auth/drive.appdata',
+    scope: 'openid email profile',
   };
 
   const SESSION_KEY = 'gct:auth:v1';
-  const TOKEN_KEY = 'gct:auth:token';
+  const FB_KEY = 'gct:auth:fb';
   const NONCE_KEY = 'gct:auth:nonce';
   const BACK_KEY = 'gct:auth:back';
   const SILENT_KEY = 'gct:auth:silentAt';
-  const NO_DRIVE_KEY = 'gct:auth:noDrive';
   const enabled = !!CONFIG.clientId && CONFIG.hosts.includes(location.hostname);
   const redirectUri = location.origin + location.pathname.replace(/index\.html$/, '');
+
+  // 舊版（Google 雲端硬碟同步）留下的資料，用不到了
+  ['gct:auth:token', 'gct:auth:noDrive', 'gct:sync:fileId'].forEach((k) => localStorage.removeItem(k));
 
   async function sha256(text) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -43,17 +48,62 @@
     const s = readJSON(SESSION_KEY);
     return s && s.exp > Date.now() ? s : null;
   }
-  // 雲端硬碟用的存取權杖（約 1 小時有效）
-  function getToken() {
-    const t = readJSON(TOKEN_KEY);
-    return t && t.exp > Date.now() + 60 * 1000 ? t.token : null;
-  }
-  function clearToken() { localStorage.removeItem(TOKEN_KEY); }
 
-  // Google 登入完成後會帶著 #id_token=...&access_token=...&state=... 回到這個網址
+  /* ---------- Firebase 登入憑證 ----------
+   * idToken 約 1 小時有效，過期就用 refreshToken 換新的（不用再跳到 Google） */
+  const saveFb = (idToken, refreshToken, expiresIn) => {
+    localStorage.setItem(FB_KEY, JSON.stringify({ idToken, refreshToken, exp: Date.now() + (Number(expiresIn) || 3600) * 1000 }));
+  };
+  const dropFb = () => localStorage.removeItem(FB_KEY);
+
+  async function firebaseSignIn(googleIdToken) {
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${CONFIG.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ postBody: `id_token=${googleIdToken}&providerId=google.com`, requestUri: location.origin, returnSecureToken: true }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.idToken) throw new Error((json.error && json.error.message) || `HTTP ${res.status}`);
+    saveFb(json.idToken, json.refreshToken, json.expiresIn);
+    return json.idToken;
+  }
+
+  let refreshing = null;
+  async function refreshFb(refreshToken) {
+    const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${CONFIG.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+    });
+    if (res.status === 400 || res.status === 401 || res.status === 403) { dropFb(); return null; } // 憑證失效，要重新登入
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    saveFb(json.id_token, json.refresh_token, json.expires_in);
+    return json.id_token;
+  }
+
+  // 讀寫雲端前呼叫；回傳 null 代表要重新登入
+  async function getToken() {
+    const fb = readJSON(FB_KEY);
+    if (!fb || !fb.refreshToken) return null;
+    if (fb.exp > Date.now() + 60 * 1000) return fb.idToken;
+    if (!refreshing) refreshing = refreshFb(fb.refreshToken).finally(() => { refreshing = null; });
+    return refreshing;
+  }
+
+  // 非管理員：確認在允許名單裡（只讀得到自己那一筆）
+  async function checkAllowed(email, idToken) {
+    const url = `https://firestore.googleapis.com/v1/projects/${CONFIG.projectId}/databases/(default)/documents/allow/${encodeURIComponent(email)}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${idToken}` } });
+    if (res.ok) return true;
+    if (res.status === 404 || res.status === 403) return false;
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  // Google 登入完成後會帶著 #id_token=...&state=... 回到這個網址
   async function handleRedirect() {
     const h = location.hash;
-    if (!/[#&](id_token|access_token|error)=/.test(h)) return null;
+    if (!/[#&](id_token|error)=/.test(h)) return null;
     const p = new URLSearchParams(h.replace(/^#/, ''));
     const back = localStorage.getItem(BACK_KEY) || '#/entry';
     history.replaceState(null, '', location.pathname + back);
@@ -66,31 +116,33 @@
       return { error: err === 'access_denied' ? '已取消登入。' : `登入失敗（${err}），請再試一次。` };
     }
 
+    const raw = p.get('id_token');
     let claims;
-    try { claims = JSON.parse(b64urlDecode(p.get('id_token').split('.')[1])); } catch (_) { return { error: '讀不到登入資料，請再試一次。' }; }
+    try { claims = JSON.parse(b64urlDecode(raw.split('.')[1])); } catch (_) { return { error: '讀不到登入資料，請再試一次。' }; }
     if (claims.aud !== CONFIG.clientId || !['accounts.google.com', 'https://accounts.google.com'].includes(claims.iss)) return { error: '登入資料不正確，請再試一次。' };
     if (!nonce || claims.nonce !== nonce || p.get('state') !== nonce) return { error: '登入逾時或來源不符，請再試一次。' };
     if (!claims.exp || claims.exp * 1000 < Date.now() - 5 * 60 * 1000) return { error: '登入已過期，請再試一次。' };
 
     const email = String(claims.email || '').trim().toLowerCase();
-    if (!claims.email_verified || !CONFIG.allowedEmailHashes.includes(await sha256(email))) {
-      clearToken();
-      localStorage.removeItem(SESSION_KEY);
-      return { error: `${email || '這個帳號'} 沒有使用權限，請改用允許的 Google 帳號。` };
+    if (!claims.email_verified) return { error: '這個 Google 帳號的信箱還沒驗證，無法登入。' };
+    const admin = (await sha256(email)) === CONFIG.adminEmailHash;
+    let fbToken;
+    try { fbToken = await firebaseSignIn(raw); } catch (e) {
+      console.warn('Firebase 登入失敗', e);
+      return { error: `連不上雲端資料庫（${e.message}），請稍後再試。` };
+    }
+    if (!admin) {
+      let ok;
+      try { ok = await checkAllowed(email, fbToken); } catch (e) { return { error: `無法確認使用權限（${e.message}），請稍後再試。` }; }
+      if (!ok) {
+        dropFb();
+        localStorage.removeItem(SESSION_KEY);
+        return { error: `${email} 沒有使用權限。請管理員先在「設定 → 使用者」加入這個 Gmail。` };
+      }
     }
     const prev = readSession();
-    const session = { email, name: claims.name || '', exp: prev && prev.email === email ? prev.exp : Date.now() + CONFIG.sessionDays * 864e5 };
+    const session = { email, name: claims.name || '', admin, exp: prev && prev.email === email ? prev.exp : Date.now() + CONFIG.sessionDays * 864e5 };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    const token = p.get('access_token');
-    const granted = String(p.get('scope') || '');
-    if (token && (!granted || granted.includes('drive.appdata'))) {
-      localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, exp: Date.now() + (Number(p.get('expires_in')) || 3600) * 1000 }));
-      localStorage.removeItem(NO_DRIVE_KEY);
-    } else {
-      // Google 同意畫面上「雲端硬碟」那一項沒有勾選：登入成功，但不能同步
-      clearToken();
-      localStorage.setItem(NO_DRIVE_KEY, '1');
-    }
     return { session };
   }
 
@@ -102,9 +154,8 @@
     const params = {
       client_id: CONFIG.clientId,
       redirect_uri: redirectUri,
-      response_type: 'id_token token',
+      response_type: 'id_token',
       scope: CONFIG.scope,
-      include_granted_scopes: 'true',
       nonce,
       state: nonce,
       prompt: silent ? 'none' : 'select_account',
@@ -129,7 +180,7 @@
         <p class="auth-sub">用你的 Google 帳號登入，手機和電腦看到同一份資料</p>
         <button type="button" class="google-btn" data-login>${GOOGLE_G}<span>使用 Google 登入</span></button>
         <p class="auth-msg" role="alert"></p>
-        <p class="auth-note">只有指定的 Gmail 帳號可以進入。記帳資料會存在你自己 Google 雲端硬碟的 App 專用隱藏資料夾，別人看不到；沒網路時也能照常記，連線後自動同步。</p>
+        <p class="auth-note">只有管理員加入名單的 Gmail 可以進入。你的帳本存在 App 的雲端資料庫，只有你自己和管理員看得到；沒網路時也能照常記，連線後自動同步。</p>
       </div>`;
     document.body.append(gate);
     const msg = gate.querySelector('.auth-msg');
@@ -153,8 +204,9 @@
       showGate(r && r.error);
       return new Promise(() => {}); // 尚未登入：停在登入畫面
     }
-    // 已登入但雲端權杖過期：有網路就先悄悄向 Google 換一張新的（不用再點帳號）
-    if (!getToken() && navigator.onLine && !(r && r.silentFailed) && !localStorage.getItem(NO_DRIVE_KEY)) {
+    // 已登入但沒有雲端憑證（舊版升級上來、或憑證失效）：有網路就先悄悄向 Google 換一張（不用再點帳號）
+    const fb = readJSON(FB_KEY);
+    if ((!fb || !fb.refreshToken) && navigator.onLine && !(r && r.silentFailed)) {
       const last = Number(localStorage.getItem(SILENT_KEY) || 0);
       if (Date.now() - last > 2 * 60 * 1000) {
         localStorage.setItem(SILENT_KEY, String(Date.now()));
@@ -167,15 +219,16 @@
 
   function logout() {
     localStorage.removeItem(SESSION_KEY);
-    clearToken();
+    dropFb();
     location.reload();
   }
 
   global.GCTAuth = {
-    ready, enabled, logout, getToken, clearToken,
-    driveDenied: () => !!localStorage.getItem(NO_DRIVE_KEY),
+    ready, enabled, logout, getToken, dropToken: dropFb,
     session: readSession,
+    isAdmin: () => { const s = readSession(); return !!(s && s.admin); },
     reconnect: () => startLogin(),
     sessionDays: CONFIG.sessionDays,
+    projectId: CONFIG.projectId,
   };
 })(window);
