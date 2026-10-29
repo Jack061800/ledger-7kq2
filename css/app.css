@@ -173,6 +173,8 @@ code { font-size: 12px; background: var(--well); padding: 1px 6px; border-radius
 }
 .brand:hover .brand-mark { transform: rotate(-12deg) scale(1.05); }
 .brand-mark svg { width: 24px; height: 24px; fill: none; stroke: var(--on-primary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.brand-mark:has(img) { background: #000; border-radius: 30%; overflow: hidden; box-shadow: 0 8px 20px -10px rgba(0, 0, 0, .6); }
+.brand-mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .brand-text strong { display: block; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
 .brand-text small { color: var(--ink-2); font-weight: 500; }
 .topbar-center { flex: 1; display: flex; justify-content: center; min-width: 0; }
@@ -517,6 +519,12 @@ input[type="date"].input { font-variant-numeric: tabular-nums; }
 .chart-svg .guide { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart-svg .hover-dot { stroke: var(--surface); stroke-width: 2.5; }
 .chart-svg .pt { stroke: var(--surface); stroke-width: 1; }
+.chart-svg .line.glow { stroke-width: 3; filter: drop-shadow(0 6px 12px rgba(59, 130, 246, .45)); }
+.chart-svg .pt-halo { opacity: .22; animation: pt-pulse 2.4s var(--ease) infinite; transform-box: fill-box; transform-origin: center; }
+.chart-svg .pt-end { stroke: var(--surface); stroke-width: 2.5; }
+.chart-svg .is-animating .pt-end, .chart-svg .is-animating .pt-halo { animation-delay: 1.2s; }
+@keyframes pt-pulse { 0%, 100% { transform: scale(.7); opacity: .3; } 50% { transform: scale(1.25); opacity: .08; } }
+.swatch-blue { background: linear-gradient(135deg, #67e8f9, #3b82f6 55%, #7c6cff) !important; }
 .chart-svg .hit { cursor: crosshair; touch-action: pan-y; }
 .chart-empty { display: grid; place-items: center; color: var(--muted); background: var(--well); border-radius: 16px; text-align: center; padding: 16px; }
 .chart-tip {
