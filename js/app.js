@@ -31,6 +31,13 @@
   const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
   const fmtDate = (iso) => { const d = D.parseISO(iso); return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`; };
   const fmtDateWeek = (iso) => `${fmtDate(iso)}（週${WEEK[D.parseISO(iso).getDay()]}）`;
+  // 完整時間（通知、審批紀錄用）：2026/10/30 14:05
+  const fmtDateTime = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? fmtDate(iso) : '—';
+    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
   const relDays = (iso) => {
     const n = D.daysBetween(iso, D.todayISO());
     return n === 0 ? '今天' : n === 1 ? '昨天' : n > 0 ? `${n} 天前` : `${-n} 天後`;
@@ -45,6 +52,8 @@
     accounts: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18.5 14.5a6.5 6.5 0 0 1 3 5.5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    minus: '<path d="M5 12h14"/>',
+    bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
     download: '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>',
     upload: '<path d="M12 20V9"/><path d="m7 14 5-5 5 5"/><path d="M5 4h14"/>',
@@ -216,7 +225,8 @@
   /* ================= 導覽與版面 ================= */
   const NAV = [
     { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Stock 庫存和 Sales 賺到的，一眼看完' },
-    { id: 'analytics', label: 'Sales 分析', short: 'Sales', icon: 'analytics', sub: '看 Sales 趨勢、出貨、各帳號比較' },
+    { id: 'analytics', label: 'Stock 購入報告', short: '購入', icon: 'analytics', sub: 'Stock Acquisitions Report：每天新增多少 Stock（CF Bal 變化 ＋ 賣出去的），各帳號比較' },
+    { id: 'sales', label: 'Stock 出售報告', short: '出售', icon: 'ship', sub: 'Stock Sales Report：你把 Stock 賣給誰、賣了多少、多少錢、交易狀態' },
     { id: 'entry', label: '每日錄入', short: '錄入', icon: 'entry', sub: '每天填各帳號的 CF Bal 和出貨' },
     { id: 'records', label: '記錄', icon: 'records', sub: '搜尋、排序、編輯每一筆每日記錄' },
     { id: 'accounts', label: '帳號', icon: 'accounts', sub: '新增、編輯、停用你的遊戲帳號' },
@@ -427,6 +437,7 @@
     $('#topActions').innerHTML = `
       <button type="button" class="search-pill" data-action="search" title="搜尋記錄（Ctrl+K）">${icon('search')}<span>搜尋記錄</span><kbd>Ctrl K</kbd></button>
       ${Sync && Sync.enabled ? '<button type="button" class="round-btn sync-btn" id="syncBtn" data-action="sync"></button>' : ''}
+      ${Team && Team.enabled && !Store.readOnly ? (() => { const n = Team.notifBadge(); return `<button type="button" class="round-btn notif-btn ${n ? 'has-new' : ''}" data-action="notifications" title="通知${n ? `（${n} 則待處理／未讀）` : ''}" aria-label="通知${n ? `，${n} 則待處理或未讀` : ''}">${icon('bell')}${n ? `<span class="dot-badge">${n > 99 ? '99+' : n}</span>` : ''}</button>`; })() : ''}
       <button type="button" class="round-btn" data-action="backup" title="${bk.stale ? (bk.days == null ? '還沒有備份過，建議下載備份' : `已 ${bk.days} 天沒有備份`) : '下載備份'}" aria-label="下載備份">${icon('download')}${bk.stale ? '<span class="dot-badge is-dot"></span>' : ''}</button>
       <button type="button" class="btn btn-primary" data-action="new-record">${icon('plus')}<span class="btn-label">新增記錄</span></button>
       <div class="me" title="今天記錄的 CF Bal 算出的 Sales（庫存變化 + 出貨）"><span class="me-avatar">${esc(Array.from(Store.state.settings.currencyName || '幣')[0])}</span><span><small>${greet}</small><b>${salesDayLabel()} Sales ${done ? fmtSigned(todaySales) : '—'}</b></span></div>`;
@@ -467,7 +478,11 @@
     renderPageHead(nav, enter);
     $('#pageActions').innerHTML = '';
     document.documentElement.classList.toggle('is-readonly', Store.readOnly);
-    $('#globalBanner').innerHTML = (Store.readOnly
+    // 有要我處理的審批：每頁上方都提示（結算頁本身有清單，就不重複）
+    const todo = Team && Team.enabled && !Store.readOnly && name !== 'settle' ? Team.notifications().filter((n) => n.action) : [];
+    $('#globalBanner').innerHTML = (todo.length
+      ? `<div class="notice notice-todo">${icon('bell')}<div><b>你有 ${todo.length} 項待處理</b><p>${esc(todo.slice(0, 3).map((n) => `${n.title}（${n.detail}）`).join('；'))}${todo.length > 3 ? ' 等' : ''}</p></div><button type="button" class="btn btn-sm btn-primary" data-action="notifications">查看</button></div>` : '')
+      + (Store.readOnly
       ? `<div class="notice notice-view">${icon('eye')}<div><b>正在看 ${esc(Store.viewing ? Store.viewing.name : '')} 的帳本</b><p>只能看，不能改。這裡的數字都是他的資料。</p></div><button type="button" class="btn btn-sm btn-primary" data-action="exit-view">回到我的帳本</button></div>` : '')
       + (Store.loadError
         ? `<div class="notice notice-error">${icon('alert')}<div><b>資料讀取問題</b><p>${esc(Store.loadError)}</p></div></div>` : '');
@@ -603,7 +618,7 @@
   function renderDashboard(view) {
     if (!Store.accounts().length) { view.innerHTML = noAccountsState(); return; }
     const today = D.todayISO();
-    $('#pageActions').innerHTML = `<a class="btn" href="#/analytics">${icon('analytics')}Sales 分析</a>
+    $('#pageActions').innerHTML = `<a class="btn" href="#/analytics">${icon('analytics')}購入報告</a>
       <button type="button" class="btn btn-ship" data-action="ship">${icon('ship')}出貨</button>
       <button type="button" class="btn btn-primary" data-action="cf">${icon('coin')}CF Bal</button>`;
     view.innerHTML = `
@@ -821,6 +836,9 @@
       <div class="field"><label for="cf-bal">CF Bal</label>
         <input id="cf-bal" name="balance" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" data-autofocus>
         <span class="field-hint" id="cf-hint"></span><span class="field-error"></span></div>
+      <div class="field field-sale"><label for="cf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">銷售所得</span></label>
+        <input id="cf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填，例如 2B">
+        <span class="field-hint">這次 CF Bal 增加的部分裡，有多少是賣東西換來的。只是標示來源，不會改變 CF Bal、Stock 或購入的計算。</span><span class="field-error"></span></div>
       <div class="calc-box" id="cf-calc" aria-live="polite"></div>
       <div class="field field-inline"><label for="cf-date">日期</label><input type="date" id="cf-date" name="date" class="input input-sm" value="${d0}" max="${today}"><span class="field-error"></span></div>
     </form>`;
@@ -836,7 +854,11 @@
       if (!a || !date) return;
       const existing = Store.recordFor(a, date);
       // 換帳號或日期時，帶入那天已記的 CF Bal
-      if (loadedFor !== a + '|' + date) { loadedFor = a + '|' + date; inp.value = existing ? fmtFull(existing.balance) : ''; }
+      if (loadedFor !== a + '|' + date) {
+        loadedFor = a + '|' + date;
+        inp.value = existing ? fmtFull(existing.balance) : '';
+        form.fromSales.value = existing && existing.fromSales != null ? fmtFull(existing.fromSales) : '';
+      }
       const prev = Calc.latestBefore(Calc.list(a), date);
       inp.placeholder = prev ? fmtFull(prev.balance) : '例如 12,345';
       $('#cf-hint', m.el).innerHTML = existing ? `這天已記過 <b>${fmt(existing.balance)}</b>，儲存會更新` : prev ? `上次 ${fmt(prev.balance)}（${fmtDate(prev.date)}）` : '這個帳號的第一筆';
@@ -849,9 +871,11 @@
       if (!prev || bal.error || bal.value == null) { calc.innerHTML = ''; return; }
       const net = bal.value - prev.balance;
       const sales = net + shipped;
+      const sold = parseAmount(form.fromSales.value);
       calc.innerHTML = `<div class="calc-line"><span>Stock 變化</span><b>${delta(net)}</b></div>
         <div class="calc-line"><span>出貨</span><b>${fmt(shipped)}</b>${ships.length ? `<small>${ships.length} 筆出貨記錄</small>` : ''}</div>
         <div class="calc-line"><span>Sales</span><b class="sales-big">${delta(sales)}</b><small>算在 ${fmtDate(salesDateFor(date))}</small></div>
+        ${!sold.error && sold.value ? `<div class="calc-line"><span>其中出售所得</span><b>${fmt(sold.value)}</b><small>只是標示，已包含在上面</small></div>` : ''}
         ${sales < 0 ? `<div class="calc-status warn">${icon('alert')}<span>Sales 是負數：是不是出貨忘了記？可以照樣儲存，之後補記出貨會自動更正。</span></div>` : ''}`;
     }
 
@@ -859,7 +883,7 @@
       const a = aid(); const date = form.date.value;
       const existing = Store.recordFor(a, D.normalizeDate(date) || '');
       try {
-        const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '' });
+        const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '', fromSales: form.fromSales.value });
         toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}`);
         if (!next) { m.close(); return; }
         const d = res.record.date;
@@ -892,11 +916,17 @@
     if (!accts.length) { toast('請先新增帳號', 'info'); location.hash = '#/accounts'; return; }
     const today = D.todayISO();
     const pick = accountId || (Store.account(ui.lastShipAccount) && Store.account(ui.lastShipAccount).status === 'active' ? ui.lastShipAccount : accts[0].id);
+    // 朋友的出貨是賣給管理員，單價由管理員在結算定；自己的出貨可以直接填買家和單價
+    const toAdmin = !!(Team && Team.enabled && !Team.isAdmin());
     const body = `<form class="form" id="shipForm" novalidate>
       ${acctChips(accts, pick)}
       <div class="field"><label for="sh-amt">出貨數量</label>
         <input id="sh-amt" name="amount" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" placeholder="例如 30,000" data-autofocus>
         <span class="field-error"></span></div>
+      ${toAdmin ? '' : `<div class="form-row">
+        <div class="field"><label for="sh-buyer">買家／對方</label><input id="sh-buyer" name="buyer" class="input" maxlength="40" placeholder="選填，出售報告用"><span class="field-error"></span></div>
+        <div class="field"><label for="sh-price">單價（RM / 1B）</label><input id="sh-price" name="price" class="input" inputmode="decimal" autocomplete="off" placeholder="選填"><span class="field-error"></span></div>
+      </div>`}
       <div class="form-row">
         <div class="field"><label for="sh-note">備註</label><input id="sh-note" name="note" class="input" maxlength="200" placeholder="選填，例如客人名字"><span class="field-error"></span></div>
         <div class="field"><label for="sh-date">日期</label><input type="date" id="sh-date" name="date" class="input" value="${date || today}" max="${today}"><span class="field-error"></span></div>
@@ -939,7 +969,7 @@
 
     function save() {
       try {
-        const s = Store.addShipment({ accountId: aid(), date: form.date.value, amount: form.amount.value, note: form.note.value });
+        const s = Store.addShipment({ accountId: aid(), date: form.date.value, amount: form.amount.value, note: form.note.value, buyer: form.buyer ? form.buyer.value : '', price: form.price ? form.price.value : '' });
         ui.lastShipAccount = s.accountId; saveUI();
         toast(`已記出貨：${Store.account(s.accountId).name} ${fmt(s.amount)}`);
         m.close();
@@ -1033,13 +1063,15 @@
       <a class="btn btn-primary btn-block" href="#/entry">${icon('entry')}前往每日錄入</a>`;
   }
 
-  /* ================= Sales 分析 ================= */
+  /* ================= Stock 購入報告（Stock Acquisitions Report） =================
+   * 購入 = CF Bal 變化 ＋ 這段期間賣出去的（賣掉前已經先得到），也就是原本的 Sales。
+   * 賣出去的明細放在「Stock 出售報告」，這裡不再另外列出貨，避免兩邊重複看。 */
   const AN_METRICS = {
-    sales: { label: '總 Sales', icon: 'trendUp', tone: '#23955a', signed: true, desc: 'Sales = CF Bal 變化 ＋ 出貨，期間內每天加總' },
-    avg: { label: '每日平均 Sales', icon: 'week', tone: '#2f6fd0', signed: true, desc: '各帳號「Sales ÷ 涵蓋天數」的加總，約等於所有帳號每天一共賺多少' },
-    shipped: { label: '總出貨', icon: 'upload', tone: '#1d8a7b', desc: '期間內出貨的總和（出貨讓 Stock 變少，但不扣 Sales）' },
+    sales: { label: '總購入', icon: 'trendUp', tone: '#23955a', signed: true, desc: '購入 = CF Bal 變化 ＋ 期間賣出去的 Stock，期間內每天加總' },
+    avg: { label: '每日平均購入', icon: 'week', tone: '#2f6fd0', signed: true, desc: '各帳號「購入 ÷ 涵蓋天數」的加總，約等於所有帳號每天一共新增多少' },
+    fromSales: { label: '其中出售東西所得', icon: 'tag', tone: '#1d8a7b', desc: '記 CF Bal 時標示「來自出售東西」的金額加總（已包含在總購入裡，只是標示來源）' },
     stock: { label: '期末 Stock', icon: 'coin', tone: '#d0921a', desc: '期間最後一天，各帳號最近一次 CF Bal 的加總' },
-    stockChange: { label: 'Stock 變化', icon: 'trend', tone: '#d34b63', signed: true, desc: 'CF Bal 增減的總和（= Sales − 出貨）' },
+    stockChange: { label: 'Stock 變化', icon: 'trend', tone: '#d34b63', signed: true, desc: 'CF Bal 增減的總和（= 購入 − 賣出去的）' },
     completion: { label: '記錄完成率', icon: 'check', tone: '#6a58d8', percent: true, desc: '實際記錄筆數 ÷（帳號數 × 天數）' },
   };
 
@@ -1063,6 +1095,7 @@
     const idx = new Map(dates.map((x, i) => [x, i]));
     const d = Store.derived();
     const sales = new Array(n).fill(null); const shipped = new Array(n).fill(null); const net = new Array(n).fill(null); const rec = new Array(n).fill(0);
+    const fromSales = new Array(n).fill(null);
     ids.forEach((id) => Calc.list(id).forEach((r) => {
       const x = d.byId.get(r.id);
       const si = idx.get(x.salesDate);
@@ -1070,6 +1103,7 @@
         if (x.sales != null) sales[si] = (sales[si] || 0) + x.sales;
         if (x.net != null) net[si] = (net[si] || 0) + x.net;
         shipped[si] = (shipped[si] || 0) + x.shipped;
+        if (r.fromSales != null) fromSales[si] = (fromSales[si] || 0) + r.fromSales;
       }
       const ri = idx.get(r.date);
       if (ri != null) rec[ri]++;
@@ -1079,16 +1113,16 @@
     const lastStock = stock.slice().reverse().find((v) => v != null);
     const recTotal = rec.reduce((a, b) => a + b, 0);
     return {
-      dates, sales, shipped, net, stock, rec, ids,
+      dates, sales, shipped, net, stock, rec, ids, fromSales,
       totals: {
-        sales: sum(sales), shipped: sum(shipped), stockChange: sum(net),
+        sales: sum(sales), shipped: sum(shipped), stockChange: sum(net), fromSales: sum(fromSales),
         stock: lastStock == null ? null : lastStock,
         avg: sumWindow(ids, start, end).avg,
         completion: ids.length && n ? (recTotal / (ids.length * n)) * 100 : null,
       },
     };
   }
-  const AN_SERIES = { sales: 'sales', shipped: 'shipped', stockChange: 'net' };
+  const AN_SERIES = { sales: 'sales', shipped: 'shipped', stockChange: 'net', fromSales: 'fromSales' };
 
   function anBucketKey(iso, bucket) {
     if (bucket === 'month') return iso.slice(0, 7);
@@ -1179,7 +1213,7 @@
     if (metric !== 'completion') {
       dailyCur.values.forEach((v, i) => { if (v != null && (!best || v > best.v)) best = { v, k: dailyCur.keys[i] }; });
     }
-    const bestLabel = { sales: 'Sales 最高的一天', avg: 'Sales 最高的一天', shipped: '出貨最多的一天', stock: 'Stock 最高的一天', stockChange: 'Stock 增加最多的一天' }[metric];
+    const bestLabel = { sales: '購入最多的一天', avg: '購入最多的一天', fromSales: '出售所得最多的一天', stock: 'Stock 最高的一天', stockChange: 'Stock 增加最多的一天' }[metric];
 
     // 本月 Sales 目標
     const lastSalesDay = salesDateFor(D.todayISO());
@@ -1220,19 +1254,19 @@
           <span>${range.label}${m.label} <b>${anFmt(metric, cur.totals[metric])}</b>，較前一期 ${pctBadge(metric, cur.totals[metric], prev.totals[metric])}</span>
           ${best ? `<span>${bestLabel}：<b>${fmtDate(best.k)}</b>（${anFmt(metric, best.v)}）</span>` : ''}
           <div class="goal">
-            ${goal ? `<span>本月 Sales <b>${fmtSigned(monthNet)}</b> / 目標 <b>${fmt(goal)}</b></span><div class="goal-bar" role="progressbar" aria-valuenow="${Math.round(goalPct)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${goalPct}%"></span></div>` : '<span class="muted">還沒有設定每月 Sales 目標</span>'}
+            ${goal ? `<span>本月購入 <b>${fmtSigned(monthNet)}</b> / 目標 <b>${fmt(goal)}</b></span><div class="goal-bar" role="progressbar" aria-valuenow="${Math.round(goalPct)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${goalPct}%"></span></div>` : '<span class="muted">還沒有設定每月購入目標</span>'}
             <button type="button" class="btn btn-sm" id="anGoal">${icon('target')}${goal ? '調整目標' : '設定目標'}</button>
           </div>
         </div>
       </article>
       <section class="an-bottom">
         <article class="card lift">
-          <header class="card-head"><div><h3>Sales 來源</h3><p class="card-sub">${range.label}各帳號 Sales 占比（只計入有賺的帳號），旁邊附出貨量</p></div></header>
+          <header class="card-head"><div><h3>購入來源</h3><p class="card-sub">${range.label}各帳號購入占比（只計入有增加的帳號）</p></div></header>
           ${positive.length ? `<div class="donut-wrap">
             <div class="donut-box">${Charts.donut(positive.map((s) => ({ value: s.v, color: color(s.a) })))}
-              <div class="donut-center"><b>${countSpan(posTotal, 'an-donut', true)}</b><small>期間總 Sales</small></div></div>
-            <ul class="share-list">${shares.map((s, k) => `<li style="--i:${k}" title="出貨 ${fmt(s.ship)}">${swatch(s.a)}<span class="name">${esc(s.a.name)}</span><span class="val ${deltaClass(s.v)}">${fmtSigned(s.v)}</span><span class="share">${s.v > 0 ? Math.round((s.v / posTotal) * 100) + '%' : '—'}</span></li>`).join('')}</ul>
-          </div>` : '<div class="mini-empty">此期間還沒有 Sales 資料</div>'}
+              <div class="donut-center"><b>${countSpan(posTotal, 'an-donut', true)}</b><small>期間總購入</small></div></div>
+            <ul class="share-list">${shares.map((s, k) => `<li style="--i:${k}">${swatch(s.a)}<span class="name">${esc(s.a.name)}</span><span class="val ${deltaClass(s.v)}">${fmtSigned(s.v)}</span><span class="share">${s.v > 0 ? Math.round((s.v / posTotal) * 100) + '%' : '—'}</span></li>`).join('')}</ul>
+          </div>` : '<div class="mini-empty">此期間還沒有購入資料</div>'}
         </article>
         <article class="card lift">
           <header class="card-head"><div><h3>Stock 分布</h3><p class="card-sub">各帳號目前的 CF Bal</p></div></header>
@@ -1252,7 +1286,7 @@
         ...(ui.anCompare ? [{ name: '前一期', color: 'var(--muted)', values: prevAligned, dashed: true, connect: true }] : []),
         { name: m.label, ...BLUE, values: curB.values, area: true, connect: true },
       ],
-      emptyText: '此期間沒有資料（Sales 需要至少記兩次 CF Bal 才算得出來）',
+      emptyText: '此期間沒有資料（購入需要至少記兩次 CF Bal 才算得出來）',
       tooltip: (i) => {
         const k = curB.keys[i];
         const recCount = curB.groups.get(k).reduce((s, j) => s + cur.rec[j], 0);
@@ -1304,6 +1338,143 @@
   }
 
   /* ================= 單筆記錄表單 ================= */
+  /* ================= Stock 出售報告（Stock Sales Report） =================
+   * 只看「出貨」記錄（Stock 賣出去的方向），和購入報告分開，不重複統計。
+   * 朋友的出貨是賣給管理員：金額和狀態看結算（待定價／已定價／已退回）；
+   * 自己的出貨：買家和單價由自己填（選填），沒填單價就顯示「未填金額」。 */
+  const SL_STATUS = { all: '全部', open: '未完成', done: '已完成', rejected: '已退回' };
+
+  // 出貨 → 出售報告的一列 { s, account, buyer, price, money, status, statusKey, editable }
+  function saleRows() {
+    const viewingEmail = Store.readOnly && Store.viewing ? Store.viewing.email : '';
+    const friendMode = !!(Team && Team.enabled && (viewingEmail || !Team.isAdmin()));
+    const email = viewingEmail || (Team ? Team.me() : '');
+    const settled = friendMode ? new Map(Team.rows(email, Store.state).map((r) => [r.id, r])) : null;
+    return (Store.state.shipments || []).map((s) => {
+      const account = Store.account(s.accountId);
+      let price; let rejected = s.rejected || null;
+      if (friendMode) { const r = settled.get(s.id); price = r ? r.price : null; rejected = (r && r.rejected) || rejected; } else price = s.price == null ? null : s.price;
+      const money = price == null ? null : Math.round((s.amount / Team.UNIT) * price * 100) / 100;
+      const statusKey = rejected ? 'rejected' : money != null ? 'done' : 'open';
+      const status = rejected ? '已退回' : money != null ? (friendMode ? '已定價' : '已完成') : (friendMode ? '待管理員定價' : '未填金額');
+      return { s, account, buyer: friendMode ? '管理員' : (s.buyer || ''), price, money, rejected, status, statusKey, editable: !friendMode && !Store.readOnly };
+    }).sort((a, b) => (a.s.date === b.s.date ? ((a.s.createdAt || '') < (b.s.createdAt || '') ? 1 : -1) : a.s.date < b.s.date ? 1 : -1));
+  }
+
+  function slRange() {
+    const today = D.todayISO();
+    if (ui.slRange === 'ytd') return { start: today.slice(0, 4) + '-01-01', end: today, label: '今年至今' };
+    if (ui.slRange === 'all') return { start: '0000-01-01', end: today, label: '全部' };
+    const n = Number(ui.slRange) || 30;
+    return { start: D.addDays(today, -(n - 1)), end: today, label: `最近 ${n} 天` };
+  }
+
+  function renderSales(view) {
+    if (!Store.accounts().length) { view.innerHTML = noAccountsState(); return; }
+    const range = slRange();
+    if (ui.slAccount && ui.slAccount !== 'all' && !Store.account(ui.slAccount)) ui.slAccount = 'all';
+    const acct = ui.slAccount || 'all';
+    const status = SL_STATUS[ui.slStatus] ? ui.slStatus : 'all';
+    const inRange = saleRows().filter((r) => r.s.date >= range.start && r.s.date <= range.end && (acct === 'all' || r.s.accountId === acct));
+    const rows = inRange.filter((r) => status === 'all' || r.statusKey === status);
+    // 合計只算沒被退回的
+    const live = inRange.filter((r) => !r.rejected);
+    const qty = live.reduce((t, r) => t + r.s.amount, 0);
+    const priced = live.filter((r) => r.money != null);
+    const money = Math.round(priced.reduce((t, r) => t + r.money, 0) * 100) / 100;
+    const pricedQty = priced.reduce((t, r) => t + r.s.amount, 0);
+    const open = live.filter((r) => r.money == null);
+    const byBuyer = new Map();
+    live.forEach((r) => {
+      const k = r.buyer || '（未填買家）';
+      const b = byBuyer.get(k) || { name: k, qty: 0, money: 0, count: 0 };
+      b.qty += r.s.amount; b.money += r.money || 0; b.count++;
+      byBuyer.set(k, b);
+    });
+    const buyers = Array.from(byBuyer.values()).sort((a, b) => b.qty - a.qty);
+
+    $('#pageActions').innerHTML = `
+      <div class="seg" data-seg="sl-range" role="group" aria-label="期間">
+        ${[['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['ytd', '今年'], ['all', '全部']].map(([v, l]) => `<button type="button" class="seg-btn ${(ui.slRange || '30') === v ? 'active' : ''}" data-sl-range="${v}">${l}</button>`).join('')}
+      </div>
+      <button type="button" class="btn btn-outline-primary" id="slExport">${icon('download')}匯出 CSV</button>
+      <button type="button" class="btn btn-ship" data-action="ship">${icon('ship')}出貨</button>`;
+
+    const chips = `<button type="button" class="chip ${acct === 'all' ? 'active' : ''}" data-sl-acct="all">全部帳號<span class="chip-count">${Store.accounts().length}</span></button>`
+      + Store.accounts().map((a) => `<button type="button" class="chip ${acct === a.id ? 'active' : ''}" data-sl-acct="${a.id}">${swatch(a)}${esc(a.name)}</button>`).join('');
+    const statusCount = (k) => (k === 'all' ? inRange.length : inRange.filter((r) => r.statusKey === k).length);
+
+    view.innerHTML = `
+      <div class="kpi-grid settle-kpis">
+        ${kpiCard({ ic: 'ship', tone: 'blue', label: '出售數量', value: fmt(qty), sub: `${live.length} 筆（不含退回）` })}
+        ${kpiCard({ ic: 'settle', tone: 'green', label: '出售金額', value: fmtRM(money), sub: priced.length ? `${priced.length} 筆有金額` : '還沒有金額' })}
+        ${kpiCard({ ic: 'tag', tone: 'violet', label: '平均單價', value: pricedQty ? `RM ${rmf.format((money / pricedQty) * Team.UNIT)}` : '—', sub: '每 1B，按有金額的出貨計' })}
+        ${kpiCard({ ic: 'alert', tone: open.length ? 'gold' : 'teal', label: '未完成', value: `${fmt(open.length)} 筆`, sub: open.length ? `共 ${fmt(open.reduce((t, r) => t + r.s.amount, 0))} 還沒有金額` : '全部都有金額' })}
+      </div>
+      <section class="card">
+        <header class="card-head"><div><h3>依買家</h3><p class="card-sub">${range.label}（${range.start === '0000-01-01' ? '全部日期' : `${fmtDate(range.start)} – ${fmtDate(range.end)}`}）賣給每個對象的合計</p></div></header>
+        ${buyers.length ? `<ul class="buyer-list">${buyers.map((b) => `<li><b class="grow">${esc(b.name)}</b><span>${b.count} 筆</span><span class="num">${fmt(b.qty)}</span><span class="num">${b.money ? fmtRM(b.money) : '—'}</span></li>`).join('')}</ul>` : '<p class="muted settle-empty">這段期間沒有出售記錄。</p>'}
+      </section>
+      <section class="card">
+        <header class="card-head"><div><h3>出售明細</h3><p class="card-sub">每一筆出貨就是一筆出售：日期、買家、哪個帳號的 Stock、數量、金額和狀態</p></div>
+          <div class="seg seg-sm" data-seg="sl-status" role="group" aria-label="狀態">
+            ${Object.entries(SL_STATUS).map(([k, l]) => `<button type="button" class="seg-btn ${status === k ? 'active' : ''}" data-sl-status="${k}">${l}（${statusCount(k)}）</button>`).join('')}
+          </div></header>
+        <div class="an-chiprow">${chips}</div>
+        ${rows.length ? `<div class="table-wrap"><table class="table sl-table">
+          <thead><tr><th>日期</th><th>買家／對方</th><th>Stock</th><th class="num">數量</th><th class="num">金額</th><th>狀態</th>${rows.some((r) => r.editable) ? '<th></th>' : ''}</tr></thead>
+          <tbody>${rows.map((r) => `<tr class="${r.rejected ? 'is-rejected' : ''}">
+            <td>${fmtDate(r.s.date)}</td>
+            <td>${r.buyer ? esc(r.buyer) : '<span class="muted">未填</span>'}${r.s.note ? `<small class="muted sl-sub">${esc(r.s.note)}</small>` : ''}</td>
+            <td>${r.account ? `${swatch(r.account)}${esc(r.account.name)}` : '<span class="muted">已刪除的帳號</span>'}</td>
+            <td class="num"><b class="sl-qty">${fmt(r.s.amount)}</b></td>
+            <td class="num">${r.money != null ? `${fmtRM(r.money)}<small class="muted sl-sub">RM ${rmf.format(r.price)} / 1B</small>` : '<span class="muted">—</span>'}</td>
+            <td><span class="tag ${r.statusKey === 'done' ? 'tag-ok' : r.statusKey === 'rejected' ? 'tag-low' : 'tag-warn'}"${r.rejected ? ` title="${esc(r.rejected.reason || '')}"` : ''}>${r.status}</span></td>
+            ${rows.some((x) => x.editable) ? `<td>${r.editable ? `<button type="button" class="btn btn-sm btn-ghost" data-sl-edit="${esc(r.s.id)}">${icon('edit')}買家／單價</button>` : ''}</td>` : ''}
+          </tr>`).join('')}</tbody></table></div>` : `<p class="muted settle-empty">沒有符合條件的出售記錄。用「出貨」按鈕記一筆就會出現在這裡。</p>`}
+      </section>`;
+
+    $$('[data-sl-range]').forEach((b) => b.addEventListener('click', () => { ui.slRange = b.dataset.slRange; saveUI(); render(false); }));
+    $$('[data-sl-acct]', view).forEach((b) => b.addEventListener('click', () => { ui.slAccount = b.dataset.slAcct; saveUI(); render(false); }));
+    $$('[data-sl-status]', view).forEach((b) => b.addEventListener('click', () => { ui.slStatus = b.dataset.slStatus; saveUI(); render(false); }));
+    $$('[data-sl-edit]', view).forEach((b) => b.addEventListener('click', () => openSaleEditModal(b.dataset.slEdit)));
+    $('#slExport').addEventListener('click', () => {
+      if (!rows.length) { toast('沒有可匯出的出售記錄', 'info'); return; }
+      const q = (v) => { const t = String(v == null ? '' : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+      const lines = [['date', 'buyer', 'account', 'quantity', 'price_rm_per_1b', 'amount_rm', 'status', 'note']]
+        .concat(rows.map((r) => [r.s.date, r.buyer, r.account ? r.account.name : '', r.s.amount, r.price == null ? '' : r.price, r.money == null ? '' : r.money.toFixed(2), r.status, r.s.note]));
+      download(`stock-sales-${range.start === '0000-01-01' ? 'all' : range.start}_${range.end}.csv`, '﻿' + lines.map((l) => l.map(q).join(',')).join('\n'), 'text/csv;charset=utf-8');
+      toast(`已匯出 ${rows.length} 筆出售記錄`);
+    });
+  }
+
+  // 自己的出貨：補填買家和單價（數量、日期不動）
+  function openSaleEditModal(id) {
+    const s = (Store.state.shipments || []).find((x) => x.id === id);
+    if (!s) return;
+    const a = Store.account(s.accountId);
+    const m = openModal({
+      title: '出售資料', size: 'modal-sm',
+      body: `<form class="form" id="saleForm" novalidate>
+        <div class="price-what"><b>${fmt(s.amount)}</b><span>${fmtDate(s.date)} · ${esc(a ? a.name : '')}${s.note ? ` · ${esc(s.note)}` : ''}</span></div>
+        <div class="field"><label for="sf-buyer">買家／對方</label><input id="sf-buyer" name="buyer" class="input" maxlength="40" value="${esc(s.buyer || '')}" placeholder="例如 客人名字" data-autofocus><span class="field-error"></span></div>
+        <div class="field"><label for="sf-price">單價（每 1B 多少 RM）</label>
+          <div class="input-affix"><span>RM</span><input id="sf-price" name="price" class="input" inputmode="decimal" autocomplete="off" value="${s.price != null ? s.price : ''}" placeholder="選填"><span>/ 1B</span></div><span class="field-error"></span></div>
+        <div class="calc-box"><span>金額</span><b id="sf-money">—</b></div>
+        <p class="help">${icon('info')}<span>只記錄這筆賣了多少錢，不會改變 Stock 或購入。</span></p>
+      </form>`,
+      footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-ok>${icon('check')}儲存</button>`,
+    });
+    const form = $('#saleForm', m.el);
+    const upd = () => { const r = parsePrice(form.price.value); $('#sf-money', m.el).textContent = r.error ? '—' : fmtRM(Math.round((s.amount / Team.UNIT) * r.value * 100) / 100); };
+    form.price.addEventListener('input', upd); upd();
+    const save = () => {
+      try { Store.updateShipmentSale(id, { buyer: form.buyer.value, price: form.price.value }); m.close(); toast('已更新出售資料'); } catch (e) { if (e.fieldErrors) setFieldErrors(form, e.fieldErrors); else toast(e.message, 'error'); }
+    };
+    $('[data-ok]', m.el).addEventListener('click', save);
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+  }
+
   function openRecordModal({ record = null, accountId = '', date = '' } = {}) {
     const accounts = Store.accounts();
     if (!accounts.length) { toast('請先新增帳號', 'info'); location.hash = '#/accounts'; return; }
@@ -1329,6 +1500,9 @@
           <input id="rf-ship" name="shipped" class="input input-lg num" inputmode="numeric" autocomplete="off" placeholder="0" value="${val(init.shipped)}">
           <span class="field-hint" id="rf-ship-hint">平常用「出貨」按鈕記，會自動算進來</span><span class="field-error"></span></div>
       </div>
+      <div class="field field-sale"><label for="rf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">銷售所得</span></label>
+        <input id="rf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填" value="${val(init.fromSales)}">
+        <span class="field-hint">這次增加的部分裡，有多少是賣東西換來的。只是標示，不會改變 CF Bal、Stock 或 Sales。</span><span class="field-error"></span></div>
       <div class="calc-box" id="rf-calc" aria-live="polite"></div>
       <div class="field"><label for="rf-note">備註</label><input id="rf-note" name="note" class="input" maxlength="200" value="${esc(init.note)}" placeholder="例如：出貨給某某、活動加倍"><span class="field-error"></span></div>
     </form>`;
@@ -1340,10 +1514,11 @@
     const form = $('#recForm', m.el);
     const read = () => ({
       date: form.date.value, accountId: form.accountId.value, balance: form.balance.value,
-      shipped: form.shipped.value, note: form.note.value,
+      shipped: form.shipped.value, note: form.note.value, fromSales: form.fromSales.value,
     });
     const fill = (r) => {
       form.balance.value = val(r.balance); form.shipped.value = val(r.shipped); form.note.value = r.note || '';
+      form.fromSales.value = val(r.fromSales);
     };
 
     function refresh() {
@@ -1708,7 +1883,7 @@
         return `<tr class="${x.negative ? 'row-warn' : ''} ${k < 24 ? 'reveal-row' : ''}" style="--i:${k}">
           <td class="nowrap">${fmtDate(r.date)}<small>週${WEEK[D.parseISO(r.date).getDay()]}</small></td>
           <td><span class="cell-acct">${swatch(a)}<span>${esc(a ? a.name : '（已刪除）')}<small>${esc(a && a.gameId ? a.gameId : '')}</small></span></span></td>
-          <td class="num">${fmt(r.balance)}</td>
+          <td class="num">${fmt(r.balance)}${r.fromSales ? `<small class="cf-sold" title="這次增加的部分中，來自出售東西">銷售所得 ${fmt(r.fromSales)}</small>` : ''}</td>
           <td class="num">${x.net == null ? '<span class="muted">—</span>' : delta(x.net)}</td>
           <td class="num">${x.shipped ? `${fmt(x.shipped)}${x.shipList && x.shipList.length > 1 ? `<small>${x.shipList.length} 筆</small>` : ''}` : '<span class="muted">—</span>'}</td>
           <td class="num">${salesCell}${x.gap > 1 ? `<small class="gap" title="和上次記錄相隔 ${x.gap} 天，這是 ${x.gap} 天的合計">跨 ${x.gap} 天</small>` : ''}</td>
@@ -2130,7 +2305,7 @@
   const settleTiles = (sum, labels) => `<div class="kpi-grid settle-kpis">
       ${kpiCard({ ic: 'settle', tone: 'blue', label: labels.owed, value: fmtRM(sum.owed), sub: `已定價 ${fmt(sum.count - sum.pending)} 筆出貨` })}
       ${kpiCard({ ic: 'check', tone: 'green', label: labels.paid, value: fmtRM(sum.paid), sub: '付款紀錄合計' })}
-      ${kpiCard({ ic: 'coin', tone: sum.balance > 0 ? 'rose' : 'teal', label: labels.balance, value: fmtRM(sum.balance), sub: sum.balance > 0 ? '總金額 − 已付' : sum.balance < 0 ? '多付了' : '已結清' })}
+      ${kpiCard({ ic: 'coin', tone: sum.balance > 0 ? 'rose' : 'teal', label: labels.balance, value: fmtRM(sum.balance), sub: `${sum.adjust ? `總金額 ${sum.adjust > 0 ? '＋' : '−'} 調整 ${fmtRM(Math.abs(sum.adjust))} − 已付` : sum.balance > 0 ? '總金額 − 已付' : sum.balance < 0 ? '多付了' : '已結清'}${sum.adjPending ? `（另有 ${sum.adjPending} 筆調整待批准，未計入）` : ''}` })}
       ${kpiCard({ ic: 'tag', tone: sum.pending ? 'gold' : 'violet', label: '待定價', value: `${fmt(sum.pending)} 筆`, sub: sum.pending ? `共 ${fmt(sum.pendingAmount)} 還沒算錢` : '全部都定價了' })}
     </div>`;
 
@@ -2190,7 +2365,8 @@
       return;
     }
     const sums = users.map((u) => ({ u, s: Team.summary(u.email, Team.sourceFor(u.email)) }));
-    const total = sums.reduce((t, x) => ({ owed: t.owed + x.s.owed, paid: t.paid + x.s.paid, balance: t.balance + x.s.balance, pending: t.pending + x.s.pending, pendingAmount: t.pendingAmount + x.s.pendingAmount, count: t.count + x.s.count }), { owed: 0, paid: 0, balance: 0, pending: 0, pendingAmount: 0, count: 0 });
+    const total = sums.reduce((t, x) => ({ owed: t.owed + x.s.owed, paid: t.paid + x.s.paid, adjust: t.adjust + x.s.adjust, balance: t.balance + x.s.balance, adjPending: t.adjPending + x.s.adjPending, pending: t.pending + x.s.pending, pendingAmount: t.pendingAmount + x.s.pendingAmount, count: t.count + x.s.count }), { owed: 0, paid: 0, adjust: 0, balance: 0, adjPending: 0, pending: 0, pendingAmount: 0, count: 0 });
+    ['owed', 'paid', 'adjust', 'balance'].forEach((k) => { total[k] = Math.round(total[k] * 100) / 100; });
     view.innerHTML = `
       ${settleTiles(total, { owed: '出貨總金額', paid: '已付', balance: '你還欠' })}
       <section class="card">
@@ -2231,9 +2407,137 @@
           </div></header>
         ${shipRowsHtml(shown, { admin: true, email })}
       </section>
+      ${adjustmentsHtml(email, { admin: true })}
       ${paymentsHtml(st, { admin: true, email })}`;
     $$('[data-settle-show]', view).forEach((b) => b.addEventListener('click', () => { ui.settleShow = b.dataset.settleShow; saveUI(); render(false); }));
     bindSettleActions(view);
+  }
+
+  /* 結算調整（Settlement-only adjustment）：只改欠款，不碰 Stock／出貨／帳本 */
+  const ADJ_TONE = { pending: 'tag-warn', approved: 'tag-ok', rejected: 'tag-low', cancelled: 'tag-muted' };
+  function adjustmentsHtml(email, { admin }) {
+    const list = Team.adjustments(email);
+    const who = (e) => (e === Team.me() ? '你' : e === email ? Team.nameOf(email) : '管理員');
+    return `<section class="card adj-card">
+      <header class="card-head"><div><h3>結算調整 <span class="tag tag-info">Settlement-only · 不影響 Stock</span></h3>
+        <p class="card-sub">${admin ? '只調整你欠他的金額（例如補差價、扣手續費），不會改他的 Stock、出貨或帳本。要等他批准後才算進結算。' : '管理員對結算金額的調整，不會改你的 Stock、出貨或帳本。你批准後才會算進結算。'}</p></div>
+        ${admin ? `<button type="button" class="btn btn-sm btn-primary" data-adj-new="${esc(email)}">${icon('plus')}新增調整</button>` : ''}</header>
+      ${list.length ? `<ul class="adj-list">${list.map((a) => `<li class="adj-${a.status}">
+          <div class="adj-main">
+            <b class="adj-amt ${a.amount < 0 ? 'neg' : 'pos'}">${a.amount < 0 ? '−' : '+'}${fmtRM(Math.abs(a.amount))}</b>
+            <span class="tag ${ADJ_TONE[a.status]}">${Team.ADJ_STATUS[a.status]}</span>
+            ${a.status === 'pending' ? '<span class="muted adj-flag">未計入結算</span>' : ''}
+          </div>
+          <p class="adj-reason">${esc(a.reason)}</p>
+          <dl class="adj-meta">
+            <div><dt>發起</dt><dd>${esc(who(a.by))} · ${fmtDateTime(a.at)}</dd></div>
+            <div><dt>受影響</dt><dd>${esc(Team.nameOf(a.target || email))}</dd></div>
+            <div><dt>調整前 → 後</dt><dd>${fmtRM(a.before)} → ${fmtRM(a.after)}<small class="muted">（發起時的欠款）</small></dd></div>
+            ${a.decision ? `<div><dt>${a.status === 'approved' ? '批准' : '拒絕'}</dt><dd>${esc(who(a.decision.by))} · ${fmtDateTime(a.decision.at)}${a.decision.note ? ` · ${esc(a.decision.note)}` : ''}${a.status === 'approved' ? `<small class="muted">（批准時 ${fmtRM(a.decision.before)} → ${fmtRM(a.decision.after)}）</small>` : ''}</dd></div>` : ''}
+            ${a.cancelledAt ? `<div><dt>撤回</dt><dd>管理員 · ${fmtDateTime(a.cancelledAt)}</dd></div>` : ''}
+          </dl>
+          ${a.status === 'pending' ? `<div class="adj-actions">${admin
+            ? `<button type="button" class="btn btn-sm btn-ghost" data-adj-cancel="${esc(a.id)}" data-email="${esc(email)}">${icon('undo')}撤回</button>`
+            : `<button type="button" class="btn btn-sm btn-danger-ghost" data-adj-respond="rejected" data-id="${esc(a.id)}">${icon('reject')}拒絕</button><button type="button" class="btn btn-sm btn-primary" data-adj-respond="approved" data-id="${esc(a.id)}">${icon('check')}批准</button>`}</div>` : ''}
+        </li>`).join('')}</ul>` : `<p class="muted settle-empty">還沒有結算調整。</p>`}
+    </section>`;
+  }
+
+  // 管理員：新增結算調整
+  function openAdjustmentModal(email) {
+    const sum = Team.summary(email, Team.sourceFor(email));
+    const id = Team.newAdjustmentId(); // 開窗時就決定 id：連按或重試都不會變成兩筆
+    const m = openModal({
+      title: `結算調整 · ${Team.nameOf(email)}`, size: 'modal-sm',
+      body: `<form class="form" id="adjForm" novalidate>
+        <div class="notice notice-info compact">${icon('info')}<div><p><b>Settlement-only adjustment · 不影響 Stock</b><br>只改你欠他的金額，不是買入、賣出或 Stock 轉移。送出後要等 ${esc(Team.nameOf(email))} 批准才會算進結算。</p></div></div>
+        <div class="seg seg-sm adj-dir" role="group" aria-label="方向">
+          <button type="button" class="seg-btn active" data-dir="1">${icon('plus')}加到欠款（你多欠他）</button>
+          <button type="button" class="seg-btn" data-dir="-1">${icon('minus')}從欠款扣掉</button>
+        </div>
+        <div class="field"><label for="af-amt">金額（RM）</label>
+          <div class="input-affix"><span>RM</span><input id="af-amt" name="amount" class="input input-xl" inputmode="decimal" autocomplete="off" placeholder="例如 20" data-autofocus></div>
+          <span class="field-error"></span></div>
+        <div class="field"><label for="af-reason">原因 <em class="req">必填</em></label><input id="af-reason" name="reason" class="input" maxlength="200" placeholder="例如 10/27 那批少算了差價"><span class="field-error"></span></div>
+        <div class="calc-box"><span>他批准後，欠款</span><b id="af-after">${fmtRM(sum.balance)}</b></div>
+      </form>`,
+      footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-ok>${icon('check')}送出給他批准</button>`,
+    });
+    const form = $('#adjForm', m.el);
+    let dir = 1;
+    $$('[data-dir]', m.el).forEach((b) => b.addEventListener('click', () => { dir = Number(b.dataset.dir); $$('[data-dir]', m.el).forEach((x) => x.classList.toggle('active', x === b)); upd(); }));
+    const upd = () => { const r = parseRM(form.amount.value); $('#af-after', m.el).textContent = r.error ? fmtRM(sum.balance) : `${fmtRM(sum.balance)} → ${fmtRM(Math.round((sum.balance + dir * r.value) * 100) / 100)}`; };
+    form.amount.addEventListener('input', upd);
+    let busy = false;
+    const save = async () => {
+      if (busy) return;
+      const r = parseRM(form.amount.value);
+      const reason = form.reason.value.trim();
+      const errs = {};
+      if (r.error) errs.amount = r.error;
+      if (reason.length < 2) errs.reason = '請寫調整原因';
+      if (Object.keys(errs).length) { setFieldErrors(form, errs); return; }
+      const btn = $('[data-ok]', m.el); busy = true; btn.disabled = true; btn.textContent = '送出中…';
+      try {
+        const res = await Team.addAdjustment(email, { id, amount: dir * r.value, reason });
+        m.close();
+        toast(res.duplicate ? '這筆調整已經送出過了' : `已送出調整 ${dir < 0 ? '−' : '+'}${fmtRM(r.value)}，等 ${Team.nameOf(email)} 批准`);
+      } catch (err) { toast(err.message, 'error'); busy = false; btn.disabled = false; btn.innerHTML = `${icon('check')}送出給他批准`; }
+    };
+    $('[data-ok]', m.el).addEventListener('click', save);
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+  }
+
+  /* 通知中心：所有審批相關的事項（誰發起、什麼、金額、時間、狀態） */
+  const NOTIF_TONE = { pending: 'tag-warn', ok: 'tag-ok', bad: 'tag-low', info: 'tag-muted' };
+  function openNotifications() {
+    let tab = Team.notifications().some((n) => n.action) ? 'todo' : 'all';
+    const m = openModal({ title: '通知', body: '<div id="notifBody"></div>', footer: `${navigator.onLine ? `<button type="button" class="btn" data-notif-refresh>${icon('refresh')}更新</button>` : ''}<span class="grow"></span><button type="button" class="btn btn-primary" data-close>關閉</button>` });
+    const draw = () => {
+      const all = Team.notifications();
+      const list = tab === 'todo' ? all.filter((n) => n.action) : all;
+      $('#notifBody', m.el).innerHTML = `
+        <div class="seg seg-sm" role="group" aria-label="篩選">
+          <button type="button" class="seg-btn ${tab === 'todo' ? 'active' : ''}" data-ntab="todo">待處理（${all.filter((n) => n.action).length}）</button>
+          <button type="button" class="seg-btn ${tab === 'all' ? 'active' : ''}" data-ntab="all">全部（${all.length}）</button>
+        </div>
+        ${Team.error ? `<p class="warn-text settle-sync">${icon('alert')}${esc(Team.error)}</p>` : ''}
+        ${list.length ? `<ul class="notif-list">${list.slice(0, 150).map((n) => `<li class="${n.unread ? 'is-unread' : ''} ${n.action ? 'is-action' : ''}">
+            <div class="notif-top"><b>${esc(n.title)}</b><span class="tag ${NOTIF_TONE[n.tone] || 'tag-muted'}">${esc(n.status)}</span></div>
+            <p class="notif-detail">${esc(n.detail)}</p>
+            <div class="notif-meta"><span>發起：${esc(n.who)}</span><span>${fmtDateTime(n.at)}</span>
+              ${n.adjId ? `<span class="grow"></span><button type="button" class="btn btn-sm btn-danger-ghost" data-nresp="rejected" data-id="${esc(n.adjId)}">拒絕</button><button type="button" class="btn btn-sm btn-primary" data-nresp="approved" data-id="${esc(n.adjId)}">批准</button>`
+                : `<span class="grow"></span><a class="btn btn-sm btn-ghost" href="${n.link}" data-close>前往${icon('right', 'icon-sm')}</a>`}</div>
+          </li>`).join('')}</ul>` : `<p class="muted settle-empty">${tab === 'todo' ? '沒有待處理的事項。' : '還沒有通知。'}</p>`}`;
+      $$('[data-ntab]', m.el).forEach((b) => b.addEventListener('click', () => { tab = b.dataset.ntab; draw(); }));
+      $$('[data-nresp]', m.el).forEach((b) => b.addEventListener('click', async () => { m.close(); await respondAdjustment(b.dataset.id, b.dataset.nresp); }));
+      $$('a[data-close]', m.el).forEach((a) => a.addEventListener('click', () => m.close()));
+    };
+    draw();
+    const rf = $('[data-notif-refresh]', m.el);
+    if (rf) rf.addEventListener('click', async () => { rf.disabled = true; await Team.refresh(); rf.disabled = false; draw(); });
+    // 打開就當作看過了（待處理的仍會留在徽章上，直到處理完）
+    Team.markNotificationsSeen();
+  }
+
+  // 被調整的人：批准／拒絕（會先確認，處理中按鈕停用，避免重複送出）
+  async function respondAdjustment(id, decision, btn) {
+    const me = Team.me();
+    const a = Team.adjustments(me).find((x) => x.id === id);
+    if (!a || a.status !== 'pending') { toast('這筆調整已經處理過了', 'info'); return; }
+    const sum = Team.summary(me, Store.state);
+    const ok = await confirmDialog({
+      title: decision === 'approved' ? '批准結算調整' : '拒絕結算調整',
+      message: `${a.amount < 0 ? '從欠款扣掉' : '加到欠款'} <b>${fmtRM(Math.abs(a.amount))}</b><br>原因：${esc(a.reason)}<br>發起：管理員 · ${fmtDateTime(a.at)}<br><br>${decision === 'approved' ? `批准後，管理員還欠你：${fmtRM(sum.balance)} → <b>${fmtRM(Math.round((sum.balance + a.amount) * 100) / 100)}</b>` : '拒絕後這筆不會算進結算。'}<br><small>只影響結算金額，不會改你的 Stock 或出貨。</small>`,
+      confirmText: decision === 'approved' ? '批准' : '拒絕', danger: decision === 'rejected',
+    });
+    if (!ok) return;
+    if (btn) { btn.disabled = true; btn.textContent = '處理中…'; }
+    try {
+      await Team.respondAdjustment(id, decision);
+      toast(decision === 'approved' ? '已批准，已算進結算' : '已拒絕');
+      render(false);
+    } catch (err) { toast(err.message, 'error'); render(false); }
   }
 
   function renderSettleMine(view) {
@@ -2250,10 +2554,20 @@
         <header class="card-head"><div><h3>我的出貨</h3><p class="card-sub">用「出貨」按鈕記的每一筆。管理員填好單價（每 1B 多少 RM）後就會算出金額；記錯的會被退回。</p></div>${loadingNote()}</header>
         ${shipRowsHtml(rows, { admin: false, email: me })}
       </section>
+      ${adjustmentsHtml(me, { admin: false })}
       ${paymentsHtml(Team.settle[me] || { payments: [] }, { admin: false, email: me })}`;
+    bindSettleActions(view);
   }
 
   function bindSettleActions(view) {
+    $$('[data-adj-new]', view).forEach((b) => b.addEventListener('click', () => openAdjustmentModal(b.dataset.adjNew)));
+    $$('[data-adj-respond]', view).forEach((b) => b.addEventListener('click', () => respondAdjustment(b.dataset.id, b.dataset.adjRespond, b)));
+    $$('[data-adj-cancel]', view).forEach((b) => b.addEventListener('click', async () => {
+      const ok = await confirmDialog({ title: '撤回結算調整', message: '撤回後這筆調整不會生效，對方也不能再批准。紀錄會保留。', confirmText: '撤回', danger: true });
+      if (!ok) return;
+      b.disabled = true;
+      try { await Team.cancelAdjustment(b.dataset.email, b.dataset.adjCancel); toast('已撤回'); } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+    }));
     $$('[data-price]', view).forEach((b) => b.addEventListener('click', () => openPriceModal(b.dataset.email, [b.dataset.price])));
     $$('[data-price-all]', view).forEach((b) => b.addEventListener('click', () => {
       const email = b.dataset.priceAll;
@@ -2530,7 +2844,7 @@
   }
 
   /* ================= 啟動 ================= */
-  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, entry: renderEntry, records: renderRecords, accounts: renderAccounts, settle: renderSettle, settings: renderSettings };
+  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, sales: renderSales, entry: renderEntry, records: renderRecords, accounts: renderAccounts, settle: renderSettle, settings: renderSettings };
   let nextRenderEnter = false;
 
   function focusRecordSearch() {
@@ -2579,6 +2893,7 @@
         Team.refresh().then(() => { if (Team.error) toast(`更新失敗：${Team.error}`, 'error'); else toast('已更新'); });
         break;
       case 'rejects-seen': Team.markRejectsSeen(Store.state.shipments); render(false); break;
+      case 'notifications': openNotifications(); break;
       case 'hide-install':
         ui.installHintHidden = true; saveUI();
         $$('.install-hint').forEach((el) => el.remove());
@@ -2603,10 +2918,17 @@
   // 同時開多個分頁時，其他分頁存檔後這裡跟著更新，避免舊資料把新資料蓋掉
   // 結算資料更新：結算頁整頁重畫，其他頁只更新側欄徽章（避免打斷正在輸入的表單）
   let teamTimer = null;
+  let lastUnread = null;
   if (Team) Team.onChange(() => {
     if (Team.justRejected) {
       const n = Team.justRejected.length; Team.justRejected = null;
       toast(`管理員退回了 ${n} 筆出貨，已從你的 Sales 撤回`, 'info');
+    }
+    // 有新的審批通知：跳提示
+    if (Team.enabled && !Store.readOnly) {
+      const unread = Team.notifications().filter((n) => n.unread);
+      if (lastUnread != null && unread.length > lastUnread) toast(`有 ${unread.length - lastUnread} 則新通知：${unread[0].title}`, 'info');
+      lastUnread = unread.length;
     }
     renderChrome(route().name);
     if (route().name !== 'settle') return;

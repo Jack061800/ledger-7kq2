@@ -128,7 +128,7 @@
       const key = r.accountId + '|' + r.date;
       if (seen.has(key)) throw new Error(`${where}與其他記錄重複（同帳號同日期）`);
       seen.add(key);
-      state.records.push({
+      const rec = {
         id: String(r.id || uid('r')),
         accountId: String(r.accountId),
         date: r.date,
@@ -139,7 +139,10 @@
         spent: optInt(r.spent, where),
         note: String(r.note || ''),
         updatedAt: r.updatedAt || new Date().toISOString(),
-      });
+      };
+      // 這次 CF Bal 增加的部分裡，有多少是出售東西得來的（只是標示，不改變 Stock／Sales 計算）
+      if (r.fromSales != null) rec.fromSales = optInt(r.fromSales, where);
+      state.records.push(rec);
     });
     const shipIds = new Set();
     (Array.isArray(obj.shipments) ? obj.shipments : []).forEach((x, i) => {
@@ -156,6 +159,9 @@
         createdAt: x.createdAt || x.updatedAt || new Date().toISOString(),
         updatedAt: x.updatedAt || new Date().toISOString(),
       };
+      // 出售對象和單價（每 1B 多少 RM），選填
+      if (x.buyer) ship.buyer = String(x.buyer).slice(0, 40);
+      if (typeof x.price === 'number' && x.price >= 0) ship.price = x.price;
       // 被管理員退回的出貨：保留記錄給本人看，但不算進 Sales 和結算
       if (x.rejected && typeof x.rejected === 'object') ship.rejected = { reason: String(x.rejected.reason || ''), note: String(x.rejected.note || ''), at: String(x.rejected.at || '') };
       state.shipments.push(ship);
@@ -446,6 +452,15 @@
       else if (r.value <= 0) errors.amount = '出貨要大於 0';
       else value.amount = r.value;
       value.note = String(input.note || '').trim().slice(0, 200);
+      const buyer = String(input.buyer || '').trim().slice(0, 40);
+      if (buyer) value.buyer = buyer;
+      // 單價：每 1B 多少 RM，最多 4 位小數，選填
+      const pt = String(input.price == null ? '' : input.price).replace(/[,\s]|RM/gi, '');
+      if (pt) {
+        if (!/^\d+(\.\d{1,4})?$|^\.\d{1,4}$/.test(pt)) errors.price = '單價請輸入數字，最多 4 位小數';
+        else if (Number(pt) > 1e6) errors.price = '單價太大了，請檢查';
+        else value.price = Number(pt);
+      }
       return { errors, value };
     },
     addShipment(input) {
@@ -456,6 +471,20 @@
         const ship = { id: uid('s'), ...value, createdAt: now, updatedAt: now };
         (s.shipments = s.shipments || []).push(ship);
         return ship;
+      });
+    },
+    // 只改出售對象和單價（數量、日期、帳號不動，Stock／Sales 計算不受影響）
+    updateShipmentSale(id, input) {
+      const ship = (this.state.shipments || []).find((x) => x.id === id);
+      if (!ship) throw new Error('找不到這筆出貨');
+      const { errors, value } = this.validateShipment({ ...ship, buyer: input.buyer, price: input.price });
+      if (errors.price) throw fieldError({ price: errors.price });
+      return this._commit((s) => {
+        const x = s.shipments.find((y) => y.id === id);
+        if (value.buyer) x.buyer = value.buyer; else delete x.buyer;
+        if (value.price != null) x.price = value.price; else delete x.price;
+        x.updatedAt = nowISO();
+        return x;
       });
     },
     deleteShipment(id) {
@@ -499,6 +528,13 @@
         if (r.error) errors[k] = r.error; else value[k] = r.value;
       });
       value.note = String(input.note || '').trim().slice(0, 200);
+      // 出售所得：只有表單有這一欄時才處理，其他地方存記錄不會把它清掉
+      if ('fromSales' in input) {
+        const r = parseAmount(input.fromSales);
+        if (r.error) errors.fromSales = r.error;
+        else if (r.value != null && r.value < 0) errors.fromSales = '不能是負數';
+        else value.fromSales = r.value;
+      }
       return { errors, value };
     },
 
@@ -703,7 +739,7 @@
 
   /* ---------- CSV ---------- */
   const CSV_COLUMNS = ['date', 'account', 'game_id', 'cf_bal', 'shipped', 'note'];
-  const CSV_COMPUTED = ['shipped_total', 'stock_change', 'sales', 'sales_date', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
+  const CSV_COMPUTED = ['shipped_total', 'stock_change', 'sales', 'sales_date', 'from_sales', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
   const ALIASES = {
     date: ['date', '日期'],
     account: ['account', 'account_name', 'name', '帳號', '帳號名稱', '账号'],
@@ -756,11 +792,11 @@
     exportRecords(records) {
       const d = Store.derived();
       // shipped = 記錄上直接填的出貨（匯入時會讀回）；shipped_total = 含出貨記錄的合計（只供參考，匯入時忽略）
-      const rows = [CSV_COLUMNS.concat(['shipped_total', 'stock_change', 'sales', 'sales_date'])];
+      const rows = [CSV_COLUMNS.concat(['shipped_total', 'stock_change', 'sales', 'sales_date', 'from_sales'])];
       records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach((r) => {
         const a = Store.account(r.accountId);
         const x = d.byId.get(r.id) || {};
-        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.shipped, r.note, x.shipped, x.net, x.sales, x.salesDate]);
+        rows.push([r.date, a ? a.name : '', a ? a.gameId : '', r.balance, r.shipped, r.note, x.shipped, x.net, x.sales, x.salesDate, r.fromSales == null ? '' : r.fromSales]);
       });
       return CSV.stringify(rows);
     },
