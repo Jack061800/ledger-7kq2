@@ -447,9 +447,11 @@
       <button type="button" class="theme-sw-btn ${theme === 'dark' ? 'active' : ''}" data-theme-set="dark" data-label="深色模式" aria-label="深色模式" aria-pressed="${theme === 'dark'}">${icon('moon')}<span class="nav-label">深色</span></button>`;
 
     const toPrice = Team ? Team.pendingTotal() : 0;
+    const timersDue = Store.readOnly ? 0 : Store.timerAlerts().filter((x) => x.state === 'overdue' || x.state === 'due').length;
     const item = (n, cls) => `<a href="#/${n.id}" class="${cls} ${n.id === active ? 'active' : ''}" ${n.id === active ? 'aria-current="page"' : ''} ${cls === 'nav-item' ? `data-label="${n.label}"` : ''} aria-label="${n.label}">
       ${icon(n.icon)}<span class="nav-label">${cls === 'tab' ? (n.short || n.label) : n.label}</span>
       ${n.id === 'entry' && pending ? `<span class="nav-badge" title="今天尚未記錄的帳號">${pending}</span>` : ''}
+      ${n.id === 'accounts' && timersDue ? `<span class="nav-badge" title="要續期 Mesos Drop Boost／可以領 Union Coin">${timersDue}</span>` : ''}
       ${n.id === 'settle' && toPrice ? `<span class="nav-badge" title="待定價的出貨">${toPrice}</span>` : ''}</a>`;
     $('#nav').innerHTML = NAV.map((n) => item(n, 'nav-item')).join('');
     $('#tabbar').innerHTML = NAV.map((n) => item(n, 'tab')).join('');
@@ -526,7 +528,283 @@
     });
   }
 
-  const avatar = (a, size = '') => `<span class="avatar ${size}" style="--c:${color(a)}">${esc(initials(a.name))}</span>`;
+  /* ================= 楓之谷職業（MapleStory SEA） =================
+   * 每個職業一個徽章：底色看職業類型、圖案看武器，外圈顏色看所屬群組。
+   * 是自己畫的圖示，不是官方角色圖；想放自己的角色，可以在帳號裡上傳圖片。 */
+  const JOB_TYPES = {
+    warrior: { label: '劍士', g: ['#fdba74', '#dc2626'], glyph: '<path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6"/><path d="m16 16 4 4"/><path d="m19 21 2-2"/>' },
+    magician: { label: '法師', g: ['#c4b5fd', '#4f46e5'], glyph: '<path d="M4 20 15 9"/><circle cx="17.5" cy="6.5" r="3"/><path d="M17.5 1.8v1.4M22.2 6.5h-1.4M14.2 3.2l1 1M20.8 9.8l-1-1"/>' },
+    bowman: { label: '弓箭手', g: ['#86efac', '#0f766e'], glyph: '<path d="M5 19C5 11 11 5 19 5"/><path d="M5 19 19 5"/><path d="M14 5h5v5"/><path d="m3 21 2-2"/>' },
+    thief: { label: '盜賊', g: ['#f0abfc', '#7e22ce'], glyph: '<path d="M12 2.5 14 10l7.5 2-7.5 2-2 7.5-2-7.5L2.5 12 10 10Z"/><circle cx="12" cy="12" r="1.4"/>' },
+    pirate: { label: '海盜', g: ['#7dd3fc', '#1d4ed8'], glyph: '<circle cx="12" cy="5" r="2.6"/><path d="M12 22V7.6"/><path d="M5 12H2.5a9.5 9.5 0 0 0 19 0H19"/>' },
+    xenon: { label: '盜賊／海盜', g: ['#a5f3fc', '#475569'], glyph: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>' },
+  };
+  const JOB_BRANCHES = {
+    explorer: { label: 'Explorers 冒險家', ring: '#f59e0b' },
+    cygnus: { label: 'Cygnus Knights 皇家騎士團', ring: '#fde68a' },
+    heroes: { label: 'Heroes 英雄團', ring: '#f87171' },
+    resistance: { label: 'Resistance 反抗軍', ring: '#4ade80' },
+    nova: { label: 'Nova 超新星', ring: '#fb7185' },
+    sengoku: { label: 'Sengoku 曉之陣', ring: '#fca5a5' },
+    flora: { label: 'Flora', ring: '#a78bfa' },
+    anima: { label: 'Anima', ring: '#fcd34d' },
+    other: { label: '其他', ring: '#e2e8f0' },
+  };
+  // [代號, 職業名稱, 類型, 群組]
+  const JOBS = [
+    ['hero', 'Hero', 'warrior', 'explorer'], ['paladin', 'Paladin', 'warrior', 'explorer'], ['dark-knight', 'Dark Knight', 'warrior', 'explorer'],
+    ['fp', 'Arch Mage (F/P)', 'magician', 'explorer'], ['il', 'Arch Mage (I/L)', 'magician', 'explorer'], ['bishop', 'Bishop', 'magician', 'explorer'],
+    ['bowmaster', 'Bowmaster', 'bowman', 'explorer'], ['marksman', 'Marksman', 'bowman', 'explorer'], ['pathfinder', 'Pathfinder', 'bowman', 'explorer'],
+    ['night-lord', 'Night Lord', 'thief', 'explorer'], ['shadower', 'Shadower', 'thief', 'explorer'], ['dual-blade', 'Dual Blade', 'thief', 'explorer'],
+    ['buccaneer', 'Buccaneer', 'pirate', 'explorer'], ['corsair', 'Corsair', 'pirate', 'explorer'], ['cannoneer', 'Cannoneer', 'pirate', 'explorer'],
+    ['dawn-warrior', 'Dawn Warrior', 'warrior', 'cygnus'], ['blaze-wizard', 'Blaze Wizard', 'magician', 'cygnus'], ['wind-archer', 'Wind Archer', 'bowman', 'cygnus'],
+    ['night-walker', 'Night Walker', 'thief', 'cygnus'], ['thunder-breaker', 'Thunder Breaker', 'pirate', 'cygnus'], ['mihile', 'Mihile', 'warrior', 'cygnus'],
+    ['aran', 'Aran', 'warrior', 'heroes'], ['evan', 'Evan', 'magician', 'heroes'], ['mercedes', 'Mercedes', 'bowman', 'heroes'],
+    ['phantom', 'Phantom', 'thief', 'heroes'], ['luminous', 'Luminous', 'magician', 'heroes'], ['shade', 'Shade', 'pirate', 'heroes'],
+    ['blaster', 'Blaster', 'warrior', 'resistance'], ['battle-mage', 'Battle Mage', 'magician', 'resistance'], ['wild-hunter', 'Wild Hunter', 'bowman', 'resistance'],
+    ['mechanic', 'Mechanic', 'pirate', 'resistance'], ['xenon', 'Xenon', 'xenon', 'resistance'], ['demon-slayer', 'Demon Slayer', 'warrior', 'resistance'], ['demon-avenger', 'Demon Avenger', 'warrior', 'resistance'],
+    ['kaiser', 'Kaiser', 'warrior', 'nova'], ['kain', 'Kain', 'bowman', 'nova'], ['cadena', 'Cadena', 'thief', 'nova'], ['angelic-buster', 'Angelic Buster', 'pirate', 'nova'],
+    ['hayato', 'Hayato', 'warrior', 'sengoku'], ['kanna', 'Kanna', 'magician', 'sengoku'],
+    ['adele', 'Adele', 'warrior', 'flora'], ['illium', 'Illium', 'magician', 'flora'], ['khali', 'Khali', 'thief', 'flora'], ['ark', 'Ark', 'pirate', 'flora'],
+    ['lara', 'Lara', 'magician', 'anima'], ['hoyoung', 'Hoyoung', 'thief', 'anima'],
+    ['zero', 'Zero', 'warrior', 'other'], ['kinesis', 'Kinesis', 'magician', 'other'], ['lynn', 'Lynn', 'magician', 'other'],
+    ['mo-xuan', 'Mo Xuan', 'pirate', 'other'], ['len', 'Len', 'warrior', 'other'],
+  ].map(([id, name, type, branch]) => ({ id, name, type, branch }));
+  const JOB_BY_ID = new Map(JOBS.map((j) => [j.id, j]));
+  const jobOf = (a) => (a && a.job ? JOB_BY_ID.get(a.job) || null : null);
+  const jobLabel = (j) => (j ? `${j.name} · ${JOB_TYPES[j.type].label}` : '');
+  function jobEmblem(j, size = '') {
+    const t = JOB_TYPES[j.type]; const b = JOB_BRANCHES[j.branch];
+    return `<span class="avatar job-emblem ${size}" style="--g1:${t.g[0]};--g2:${t.g[1]};--ring:${b.ring}" title="${esc(j.name)}"><svg viewBox="0 0 24 24" aria-hidden="true">${t.glyph}</svg></span>`;
+  }
+  // 上傳的角色圖：先讓使用者框出角色（可去掉單色背景），再把最長邊縮到 size px，轉成 webp（不支援時用 png）
+  // 取消時回傳 null
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { reject(new Error('請選 PNG、JPG 或 WebP 圖片')); return; }
+      if (file.size > 15 * 1024 * 1024) { reject(new Error('圖片太大了（超過 15MB）')); return; }
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve({ img, url });
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('讀不到這張圖片')); };
+      img.src = url;
+    });
+  }
+  // 從邊緣往內把「跟邊緣底色很像」的連續像素變透明（適合單色或漸層的截圖背景）
+  //   每一步只跟「剛清掉的鄰居」比顏色（漸層背景也清得掉），另外不能離邊緣平均色太遠（不會一路吃進角色）
+  function clearBackground(c, tol = 26) {
+    const g = c.getContext('2d'); const { width: w, height: h } = c;
+    const im = g.getImageData(0, 0, w, h); const d = im.data;
+    const gone = new Uint8Array(w * h); const stack = [];
+    const border = [];
+    for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x);
+    for (let y = 0; y < h; y++) border.push(y * w, y * w + w - 1);
+    const avg = [0, 1, 2].map((k) => border.reduce((t, p) => t + d[p * 4 + k], 0) / border.length);
+    const near = (i, j) => (d[i] - d[j]) ** 2 + (d[i + 1] - d[j + 1]) ** 2 + (d[i + 2] - d[j + 2]) ** 2 <= tol * tol;
+    const nearAvg = (i) => (d[i] - avg[0]) ** 2 + (d[i + 1] - avg[1]) ** 2 + (d[i + 2] - avg[2]) ** 2 <= (tol * 4) ** 2;
+    border.forEach((p) => { if (nearAvg(p * 4)) stack.push(p, p); });
+    while (stack.length) {
+      const from = stack.pop(); const p = stack.pop();
+      if (gone[p]) continue;
+      const i = p * 4;
+      if (p !== from && !near(i, from * 4)) continue;
+      if (!nearAvg(i)) continue;
+      gone[p] = 1;
+      const x = p % w;
+      if (x > 0) stack.push(p - 1, p);
+      if (x < w - 1) stack.push(p + 1, p);
+      if (p >= w) stack.push(p - w, p);
+      if (p < w * (h - 1)) stack.push(p + w, p);
+    }
+    for (let p = 0; p < w * h; p++) if (gone[p]) d[p * 4 + 3] = 0;
+    g.putImageData(im, 0, 0);
+  }
+  function encodeAvatar(src, size) {
+    const k = Math.min(1, size / Math.max(src.width, src.height));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(src.width * k)); c.height = Math.max(1, Math.round(src.height * k));
+    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high';
+    g.drawImage(src, 0, 0, c.width, c.height);
+    let out = c.toDataURL('image/webp', 0.88);
+    if (!out.startsWith('data:image/webp')) out = c.toDataURL('image/png');
+    if (out.length > 118000) out = c.toDataURL('image/webp', 0.7);
+    if (out.length > 118000) throw new Error('圖片細節太多，壓縮後還是太大，請框小一點');
+    return out;
+  }
+  async function pickAvatar(file, size) {
+    const { img, url } = await loadImage(file);
+    const W = img.naturalWidth; const H = img.naturalHeight;
+    return new Promise((resolve, reject) => {
+      let done = false; let box = null;
+      const m = openModal({
+        title: '框出你的角色',
+        body: `<p class="help">${icon('info')}<span>在圖上<b>拖曳</b>框出一個角色。不框就用整張。</span></p>
+          <div class="crop-wrap" id="crop-wrap"><img src="${url}" alt="" draggable="false"><div class="crop-box" hidden></div></div>
+          <label class="check-row"><input type="checkbox" id="crop-bg" checked><span><b>去掉背景</b><small>把框框邊緣的底色變透明，角色才會站在平台上（底色很花時可以關掉）</small></span></label>`,
+        footer: `<button type="button" class="btn" data-close>取消</button><span class="grow"></span><button type="button" class="btn btn-primary" data-ok>${icon('check')}使用</button>`,
+        onClose: () => { URL.revokeObjectURL(url); if (!done) resolve(null); },
+      });
+      const wrap = $('#crop-wrap', m.el); const el = $('.crop-box', m.el); const shown = $('img', wrap);
+      let start = null;
+      const pos = (e) => { const r = shown.getBoundingClientRect(); return { x: Math.max(0, Math.min(r.width, e.clientX - r.left)), y: Math.max(0, Math.min(r.height, e.clientY - r.top)) }; };
+      const draw = () => { if (!box) { el.hidden = true; return; } el.hidden = false; Object.assign(el.style, { left: box.x + 'px', top: box.y + 'px', width: box.w + 'px', height: box.h + 'px' }); };
+      wrap.addEventListener('pointerdown', (e) => { e.preventDefault(); start = pos(e); box = null; draw(); wrap.setPointerCapture(e.pointerId); });
+      wrap.addEventListener('pointermove', (e) => {
+        if (!start) return;
+        const p = pos(e);
+        box = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) };
+        draw();
+      });
+      wrap.addEventListener('pointerup', () => { start = null; if (box && (box.w < 8 || box.h < 8)) { box = null; draw(); } });
+      $('[data-ok]', m.el).addEventListener('click', () => {
+        try {
+          const r = shown.getBoundingClientRect(); const kx = W / r.width; const ky = H / r.height;
+          const sx = box ? Math.round(box.x * kx) : 0; const sy = box ? Math.round(box.y * ky) : 0;
+          const sw = box ? Math.max(1, Math.round(box.w * kx)) : W; const sh = box ? Math.max(1, Math.round(box.h * ky)) : H;
+          // 先縮到合理大小再去背，大圖也不會卡
+          const k = Math.min(1, (size * 2) / Math.max(sw, sh));
+          const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+          c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+          if ($('#crop-bg', m.el).checked) clearBackground(c);
+          const out = encodeAvatar(c, size);
+          done = true; m.close(); resolve(out);
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+  }
+  /* 五大職業的 Q 版角色（自己畫的原創圖，不是官方圖）：同一套深色鎧甲＋金邊，各拿自己的武器 */
+  const GOLD = '#e8be5a';
+  const CHIBI = {
+    warrior: {
+      gem: '#ef4444', cape: '#5b1f2a', eye: '#b91c1c',
+      hair: '<path d="M30 58Q30 40 40 38L46 50 52 40 60 48 68 40 74 50 80 38Q90 40 90 58Z" fill="#6b3f24"/><path d="M27 52Q26 16 60 14Q94 16 93 52L86 46Q60 34 34 46Z" fill="#2b2a6e" stroke="' + GOLD + '" stroke-width="2"/><path d="M34 46Q60 34 86 46" stroke="#c084fc" stroke-width="2" fill="none"/><path d="M60 14Q64 0 86 4Q72 8 67 17Z" fill="#a78bfa"/><path d="M57 24h6v14h-6z" fill="' + GOLD + '"/>',
+      weapon: '<g transform="rotate(18 92 104)"><path d="M89 30h8v70h-8z" fill="#e6edf5" stroke="#8a97a8" stroke-width="1.2"/><path d="M93 30v70" stroke="#b8c4d2" stroke-width="1"/><path d="M89 30l4-8 4 8z" fill="#e6edf5" stroke="#8a97a8" stroke-width="1.2"/><rect x="82" y="99" width="22" height="5" rx="2.5" fill="' + GOLD + '"/><rect x="90.5" y="104" width="5" height="15" rx="2" fill="#5a3b22"/><circle cx="93" cy="121" r="3" fill="' + GOLD + '"/></g>',
+    },
+    magician: {
+      gem: '#8b5cf6', cape: '#2e1f5e', eye: '#7c3aed',
+      back: '<path d="M26 52Q24 18 60 16Q96 18 94 52L97 104Q86 98 84 78H36Q34 98 23 104Z" fill="#cbbcf2"/>',
+      hair: '<path d="M29 55Q30 21 60 19Q90 21 91 55Q84 38 72 36Q66 46 56 40Q46 46 40 36Q32 42 29 55Z" fill="#d9ccfa"/><path d="M38 36Q50 6 84 2Q70 14 80 36Z" fill="#2b2a6e" stroke="' + GOLD + '" stroke-width="1.6"/><path d="M18 38Q60 22 102 38Q90 46 60 42Q30 46 18 38Z" fill="#2b2a6e" stroke="' + GOLD + '" stroke-width="2"/><path d="M40 33Q60 26 80 33" stroke="#c084fc" stroke-width="2.2" fill="none"/><path d="M60 26l4 5-4 5-4-5z" fill="#c084fc" stroke="' + GOLD + '" stroke-width="1.1"/>',
+      weapon: '<rect x="89" y="46" width="5" height="88" rx="2.5" fill="#6b4a2b"/><path d="M84 50q7.5-10 15 0" stroke="' + GOLD + '" stroke-width="3" fill="none"/><circle cx="91.5" cy="40" r="13" fill="#a78bfa" opacity=".25"/><circle cx="91.5" cy="40" r="8" fill="#c4b5fd"/><circle cx="89" cy="37.5" r="3" fill="#fff" opacity=".9"/>',
+    },
+    bowman: {
+      gem: '#22c55e', cape: '#14432f', eye: '#15803d',
+      back: '<path d="M80 28Q108 34 100 76Q95 58 82 50Z" fill="#2f8f58"/>',
+      hair: '<path d="M29 55Q28 22 60 19Q92 22 91 55Q85 40 76 37Q70 47 60 41Q50 47 44 37Q34 41 29 55Z" fill="#3fae6a"/><path d="M80 26q10-12 18-6-8 2-12 10z" fill="' + GOLD + '"/>',
+      weapon: '<path d="M86 52Q112 92 86 132" stroke="#8a5a2b" stroke-width="4.5" fill="none" stroke-linecap="round"/><path d="M86 52Q112 92 86 132" stroke="' + GOLD + '" stroke-width="1.2" fill="none" stroke-dasharray="3 9"/><path d="M86 52V132" stroke="#f3f4f6" stroke-width="1"/>',
+    },
+    thief: {
+      gem: '#a855f7', cape: '#2a1840', eye: '#9333ea', mask: true,
+      hair: '<path d="M28 56Q27 21 60 18Q93 21 92 56L88 42 82 48 76 34 68 44 60 30 52 44 44 34 38 48 32 42Z" fill="#26243a"/><path d="M30 46Q60 36 90 46" stroke="#4c1d95" stroke-width="5" fill="none"/>',
+      weapon: '<g transform="translate(97 98) rotate(20)"><path d="M0-12 3-3 12 0 3 3 0 12-3 3-12 0-3-3z" fill="#d6dbe4" stroke="#6b7280" stroke-width="1"/><circle r="2.2" fill="' + GOLD + '"/></g><g transform="translate(104 72) rotate(-15) scale(.7)"><path d="M0-12 3-3 12 0 3 3 0 12-3 3-12 0-3-3z" fill="#d6dbe4" stroke="#6b7280" stroke-width="1"/></g>',
+    },
+    pirate: {
+      gem: '#0ea5e9', cape: '#123a5c', eye: '#0369a1',
+      hair: '<path d="M29 56Q28 26 60 24Q92 26 91 56Q86 44 78 42Q70 50 60 45Q50 50 42 42Q34 45 29 56Z" fill="#f2c75c"/><path d="M20 36Q60 2 100 36Q92 43 60 38Q28 43 20 36Z" fill="#241d36" stroke="' + GOLD + '" stroke-width="2.2"/><circle cx="60" cy="24" r="4" fill="' + GOLD + '"/>',
+      weapon: '<rect x="82" y="96" width="25" height="8" rx="2.5" fill="#5b6472"/><rect x="104" y="97" width="5" height="6" rx="1" fill="#3b424d"/><path d="M84 103h8l-2 13h-6z" fill="#6b4a2b"/><rect x="82" y="95" width="10" height="3" rx="1.5" fill="' + GOLD + '"/>',
+    },
+  };
+  function chibiSvg(type) {
+    const p = CHIBI[type === 'xenon' ? 'thief' : type] || CHIBI.warrior;
+    const id = 'ar' + type;
+    return `<svg class="chibi" viewBox="0 0 120 150" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3f3d97"/><stop offset="1" stop-color="#1c1a4a"/></linearGradient></defs>
+      ${p.back || ''}
+      <path d="M38 84Q60 78 82 84L91 132Q60 141 29 132Z" fill="${p.cape}"/>
+      <rect x="47" y="110" width="11" height="22" rx="4" fill="#1b1730"/><rect x="62" y="110" width="11" height="22" rx="4" fill="#1b1730"/>
+      <path d="M45 127h14v9a3 3 0 0 1-3 3H43a3 3 0 0 1-3-3 8 8 0 0 1 5-9Z" fill="#2c2442" stroke="${GOLD}" stroke-width="1.2"/><path d="M75 127H61v9a3 3 0 0 0 3 3h13a3 3 0 0 0 3-3 8 8 0 0 0-5-9Z" fill="#2c2442" stroke="${GOLD}" stroke-width="1.2"/>
+      <rect x="30" y="88" width="10" height="23" rx="5" fill="#2c2442"/><rect x="80" y="88" width="10" height="23" rx="5" fill="#2c2442"/>
+      <path d="M42 84Q60 76 78 84L80 115Q60 121 40 115Z" fill="url(#${id})" stroke="${GOLD}" stroke-width="1.6"/>
+      <path d="M60 90l5.5 6.5L60 103l-5.5-6.5Z" fill="${p.gem}" stroke="${GOLD}" stroke-width="1.2"/><path d="M58.5 93l1.5-1.5 1.5 1.5" stroke="#fff" stroke-width="1" fill="none" opacity=".8"/>
+      <rect x="41" y="106" width="38" height="5" rx="2.5" fill="${GOLD}"/>
+      <ellipse cx="39" cy="87" rx="10" ry="7.5" fill="#2b2a6e" stroke="${GOLD}" stroke-width="1.3"/><ellipse cx="81" cy="87" rx="10" ry="7.5" fill="#2b2a6e" stroke="${GOLD}" stroke-width="1.3"/>
+      <path d="M31 86q8-6 16 0M73 86q8-6 16 0" stroke="#c084fc" stroke-width="1.6" fill="none"/>
+      <circle cx="35" cy="112" r="4.5" fill="#ffe1c8"/>
+      <circle cx="60" cy="52" r="30" fill="#ffe1c8"/>
+      <ellipse cx="49" cy="57" rx="4.8" ry="6.4" fill="#231833"/><ellipse cx="49.6" cy="58.6" rx="3" ry="3.8" fill="${p.eye}"/><circle cx="50.8" cy="54.6" r="1.8" fill="#fff"/>
+      <ellipse cx="71" cy="57" rx="4.8" ry="6.4" fill="#231833"/><ellipse cx="71.6" cy="58.6" rx="3" ry="3.8" fill="${p.eye}"/><circle cx="72.8" cy="54.6" r="1.8" fill="#fff"/>
+      ${p.mask ? '<path d="M33 63Q60 74 87 63L85 73Q60 85 35 73Z" fill="#2c2442" stroke="#4c1d95" stroke-width="1.2"/>' : '<ellipse cx="43" cy="66" rx="4" ry="2.2" fill="#ff9a9a" opacity=".45"/><ellipse cx="77" cy="66" rx="4" ry="2.2" fill="#ff9a9a" opacity=".45"/><path d="M57 68q3 2.6 6 0" stroke="#b05a48" stroke-width="1.7" fill="none" stroke-linecap="round"/>'}
+      ${p.hair}
+      ${p.weapon}
+      <circle cx="87" cy="110" r="4.5" fill="#ffe1c8"/>
+    </svg>`;
+  }
+
+  // 遊戲裡的樣子：角色站在小平台上，背景用職業類型的顏色，待機時上下輕輕晃
+  //   有上傳圖片就用圖片，沒有就用該職業類型的 Q 版角色
+  function charStage(a, size = '') {
+    const j = jobOf(a); const t = j ? JOB_TYPES[j.type] : null;
+    const style = t ? `--g1:${t.g[0]};--g2:${t.g[1]}` : `--g1:color-mix(in srgb, ${color(a)} 45%, #fff);--g2:${color(a)}`;
+    const fig = a.avatar ? `<img class="char-fig" src="${a.avatar}" alt="${esc(a.name)}" loading="lazy">` : j ? `<span class="char-fig">${chibiSvg(j.type)}</span>` : '';
+    return `<div class="char-stage ${size}" style="${style}"><span class="stage-glow"></span><span class="stage-floor"></span>${fig}${j ? `<span class="stage-tag">${esc(j.name)}</span>` : ''}</div>`;
+  }
+  // 頭像：自己上傳的角色圖 > 職業徽章 > 名稱縮寫
+  const avatar = (a, size = '') => {
+    if (a && a.avatar) return `<span class="avatar has-img ${size}" style="--c:${color(a)}"><img src="${a.avatar}" alt="" loading="lazy"></span>`;
+    const j = jobOf(a);
+    if (j) return jobEmblem(j, size);
+    return `<span class="avatar ${size}" style="--c:${color(a)}">${esc(initials(a.name))}</span>`;
+  };
+
+  /* ================= 定時事項：Mesos Drop Boost（30 天）、Union Coin（3 天） ================= */
+  const TIMER_KINDS = Object.keys(Store.TIMERS);
+  const TIMER_ICON = { boost: 'trend', union: 'coin' };
+  function timerText(st) {
+    if (st.state === 'none') return '還沒記錄';
+    if (st.state === 'overdue') return st.kind === 'union' ? `可以領了（過了 ${-st.left} 天）` : `已過期 ${-st.left} 天`;
+    if (st.state === 'due') return st.kind === 'union' ? '今天可以領' : '今天到期';
+    return st.kind === 'union' ? `${st.left} 天後可領` : `還有 ${st.left} 天（${fmtDate(st.due).slice(5)} 到期）`;
+  }
+  const timerTone = (st) => ({ overdue: 'bad', due: 'bad', soon: 'warn', none: 'muted', ok: 'ok' }[st.state] || 'muted');
+  // 帳號卡片上的一行：名稱、狀態、剩餘天數條、做完按鈕
+  function timerRow(a, kind) {
+    const st = Store.timerStatus(a, kind);
+    if (!st || st.state === 'off') return '';
+    const def = Store.TIMERS[kind];
+    const pct = st.state === 'none' ? 0 : Math.max(0, Math.min(100, (st.left / def.days) * 100));
+    const btn = Store.readOnly ? '' : st.doneToday
+      ? `<button type="button" class="btn btn-xs btn-ghost tm-done" data-timer-undo="${kind}" data-aid="${a.id}" title="今天已${def.done}，按一下取消">${icon('check', 'icon-xs')}今天</button>`
+      : `<button type="button" class="btn btn-xs" data-timer-done="${kind}" data-aid="${a.id}" title="記下今天已${def.done}">${kind === 'boost' ? '已續期' : '已領'}</button>`;
+    return `<div class="timer-row tm-${timerTone(st)}">
+      <span class="timer-ic">${icon(TIMER_ICON[kind], 'icon-sm')}</span>
+      <div class="timer-main"><div class="timer-top"><b>${def.label}</b><span class="timer-state">${timerText(st)}</span></div>
+        <div class="timer-bar"><span style="width:${pct}%"></span></div>
+        <small class="muted">${st.last ? `上次${def.done} ${fmtDate(st.last)} · 每 ${def.days} 天` : `每 ${def.days} 天${def.done}一次`}</small></div>
+      ${btn}</div>`;
+  }
+  function bindTimerButtons(root) {
+    $$('[data-timer-done], [data-timer-undo]', root).forEach((b) => b.addEventListener('click', () => {
+      const kind = b.dataset.timerDone || b.dataset.timerUndo; const on = !!b.dataset.timerDone;
+      const a = Store.account(b.dataset.aid); const def = Store.TIMERS[kind];
+      safely(() => {
+        Store.markTimer(a.id, kind, D.todayISO(), on);
+        toast(on ? `${a.name}：${def.label} 今天已${def.done}，下次 ${fmtDate(D.addDays(D.todayISO(), def.days))}` : `已取消 ${a.name} 今天的 ${def.label} 記錄`);
+      });
+    }));
+  }
+  // 總覽上方的提醒
+  function timerNotice() {
+    if (Store.readOnly) return '';
+    const alerts = Store.timerAlerts().filter((x) => x.state !== 'none');
+    const none = Store.timerAlerts().filter((x) => x.state === 'none');
+    if (!alerts.length && !none.length) return '';
+    const line = (x) => `<li class="tmr-item tm-${timerTone(x)}">${avatar(x.account, 'xs')}<span class="tmr-text"><b>${esc(x.account.name)}</b> · ${Store.TIMERS[x.kind].label}<span class="timer-state">${timerText(x)}</span></span>
+      <button type="button" class="btn btn-xs" data-timer-done="${x.kind}" data-aid="${x.account.id}">${x.kind === 'boost' ? '已續期' : '已領'}</button></li>`;
+    const urgent = alerts.filter((x) => x.state !== 'soon').length;
+    return `<div class="notice notice-timer ${urgent ? 'is-urgent' : ''}">${icon('bell')}<div class="grow"><b>${alerts.length ? `${alerts.length} 個角色事項要處理` : '還沒記錄續期／領取日期'}</b>
+      ${alerts.length ? `<ul class="tmr-list">${alerts.map(line).join('')}</ul>` : ''}
+      ${none.length ? `<p class="muted">${none.length} 項還沒記錄過上次日期（${Array.from(new Set(none.map((x) => esc(x.account.name)))).slice(0, 4).join('、')}${none.length > 4 ? ' 等' : ''}）：做過後按「已續期／已領」，或在記 CF Bal 時勾選。</p>` : ''}</div>
+      <a class="btn btn-sm" href="#/accounts">${icon('accounts')}看全部角色</a></div>`;
+  }
+  // 記 CF Bal 時的勾選：date 這天有沒有做
+  function timerChecks(a, date, prefix) {
+    if (!a) return '';
+    return TIMER_KINDS.filter((k) => !(a.track && a.track[k] === false)).map((k) => {
+      const def = Store.TIMERS[k];
+      const on = ((a.timers || {})[k] || []).includes(date);
+      const st = Store.timerStatus(a, k, date);
+      return `<label class="timer-chk tm-${st ? timerTone(st) : 'muted'}"><input type="checkbox" name="${prefix}${k}" ${on ? 'checked' : ''}>
+        <span class="tc-box">${icon('check', 'icon-xs')}</span><span class="tc-text"><b>${k === 'boost' ? '今天續期了' : '今天領了'} ${def.label}</b><small>${st && st.state !== 'none' && st.last !== date ? timerText(st) : st && st.last === date ? '已記錄這天' : '還沒記錄過'}</small></span></label>`;
+    }).join('');
+  }
   const swatch = (a) => `<span class="swatch" style="background:${color(a)}"></span>`;
   const statusTag = (a) => (a.status === 'active' ? '<span class="tag tag-ok">啟用</span>' : '<span class="tag tag-muted">停用</span>');
   const hint = (text) => `<span class="hint" tabindex="0" role="note" aria-label="${esc(text)}" data-tip="${esc(text)}">${icon('info')}</span>`;
@@ -674,7 +952,7 @@
       $('#rangeNote', view).textContent = range.label;
 
       // 提醒
-      const notices = [installHint(), Store.readOnly ? '' : rejectNotice(Store.state.shipments)].filter(Boolean);
+      const notices = [installHint(), timerNotice(), Store.readOnly ? '' : rejectNotice(Store.state.shipments)].filter(Boolean);
       const pending = unrecordedToday();
       if (pending.length) {
         notices.push(`<div class="notice notice-info">${icon('calendar')}<div><b>今天還有 ${pending.length} 個帳號沒記 CF Bal</b><p>${pending.slice(0, 6).map((a) => esc(a.name)).join('、')}${pending.length > 6 ? ' 等' : ''}</p></div><button type="button" class="btn btn-sm" data-action="cf">${icon('coin')}記 CF Bal</button></div>`);
@@ -685,6 +963,7 @@
         notices.push(`<div class="notice notice-warn">${icon('shield')}<div><b>${days == null ? '還沒有下載過備份' : `已 ${days} 天沒有備份`}</b><p>${Sync && Sync.enabled ? '雲端已經有一份；偶爾下載備份檔，多一層保險。' : '資料只存在這個瀏覽器，清除瀏覽資料或換裝置就會看不到。建議每週下載一次備份檔。'}</p></div><button type="button" class="btn btn-sm" data-action="backup">下載備份</button></div>`);
       }
       $('#dashNotices', view).innerHTML = notices.join('');
+      bindTimerButtons($('#dashNotices', view));
 
       if (!ids.length) {
         $('#kpis', view).innerHTML = '';
@@ -855,6 +1134,7 @@
       <div class="field field-sale"><label for="cf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="cf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填，例如 2B">
         <span class="field-hint">這次 CF Bal 增加的部分裡，有多少是賣東西換來的。只是標示來源，不會改變 CF Bal、Stock 或購入的計算。</span><span class="field-error"></span></div>
+      <div class="timer-checks" id="cf-timers"></div>
       <div class="calc-box" id="cf-calc" aria-live="polite"></div>
       <div class="field field-inline"><label for="cf-date">日期</label><input type="date" id="cf-date" name="date" class="input input-sm" value="${d0}" max="${today}"><span class="field-error"></span></div>
     </form>`;
@@ -874,6 +1154,7 @@
         loadedFor = a + '|' + date;
         inp.value = existing ? fmtFull(existing.balance) : '';
         form.fromSales.value = existing && existing.fromSales != null ? fmtFull(existing.fromSales) : '';
+        $('#cf-timers', m.el).innerHTML = timerChecks(Store.account(a), date, 'cft-');
       }
       const prev = Calc.latestBefore(Calc.list(a), date);
       inp.placeholder = prev ? fmtFull(prev.balance) : '例如 12,345';
@@ -900,7 +1181,13 @@
       const existing = Store.recordFor(a, D.normalizeDate(date) || '');
       try {
         const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '', fromSales: form.fromSales.value });
-        toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}`);
+        // 有勾的定時事項記在這天；取消勾選就拿掉這天的記錄
+        const done = [];
+        TIMER_KINDS.forEach((k) => {
+          const box = form.querySelector(`[name="cft-${k}"]`);
+          if (box && Store.markTimer(a, k, res.record.date, box.checked) && box.checked) done.push(Store.TIMERS[k].label);
+        });
+        toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}${done.length ? `，${done.join('、')} 已記下` : ''}`);
         if (!next) { m.close(); return; }
         const d = res.record.date;
         $('#cf-chips', m.el).innerHTML = acctChips(accts, a, (x) => Store.recordFor(x.id, d));
@@ -1519,6 +1806,7 @@
       <div class="field field-sale"><label for="rf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="rf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填" value="${val(init.fromSales)}">
         <span class="field-hint">這次增加的部分裡，有多少是賣東西換來的。只是標示，不會改變 CF Bal、Stock 或 Stock Acquired。</span><span class="field-error"></span></div>
+      <div class="timer-checks" id="rf-timers"></div>
       <div class="calc-box" id="rf-calc" aria-live="polite"></div>
       <div class="field"><label for="rf-note">備註</label><input id="rf-note" name="note" class="input" maxlength="200" value="${esc(init.note)}" placeholder="例如：出貨給某某、活動加倍"><span class="field-error"></span></div>
     </form>`;
@@ -1537,9 +1825,15 @@
       form.fromSales.value = val(r.fromSales);
     };
 
+    let timersFor = '';
     function refresh() {
       const v = read();
       const date = D.normalizeDate(v.date);
+      // 換帳號或日期時，重畫定時事項的勾選（勾了沒存的不會被打斷）
+      if (date && v.accountId && timersFor !== v.accountId + '|' + date) {
+        timersFor = v.accountId + '|' + date;
+        $('#rf-timers', m.el).innerHTML = timerChecks(Store.account(v.accountId), date, 'rft-');
+      }
       const clashBox = $('#rf-clash', m.el);
       const existing = date && v.accountId ? Store.recordFor(v.accountId, date) : null;
       clashBox.innerHTML = '';
@@ -1599,6 +1893,11 @@
         const v = read();
         const res = Store.saveRecord(v, editId);
         ui.lastAccountId = v.accountId; saveUI();
+        TIMER_KINDS.forEach((k) => {
+          const box = form.querySelector(`[name="rft-${k}"]`);
+          if (box) Store.markTimer(v.accountId, k, res.record.date, box.checked);
+        });
+        timersFor = '';
         const a = Store.account(v.accountId);
         toast(`${res.mode === 'created' ? '已新增' : '已更新'}：${a.name} · ${fmtDate(res.record.date)}`);
         if (!keepOpen) { m.close(); return; }
@@ -1673,7 +1972,8 @@
             const r = Store.recordFor(a.id, date);
             const prev = Calc.latestBefore(Calc.list(a.id), date);
             return `<div class="entry-row ${r ? 'is-saved' : ''}" data-aid="${a.id}">
-              <div class="er-account">${avatar(a, 'sm')}<div class="er-name"><b>${esc(a.name)}</b><small>${esc(a.gameId || '—')}</small></div>${r ? `<span class="tag tag-ok">${icon('check', 'icon-xs')}已記錄</span>` : ''}</div>
+              <div class="er-account">${avatar(a, 'sm')}<div class="er-name"><b>${esc(a.name)}</b><small>${esc(jobOf(a) ? jobOf(a).name : a.gameId || '—')}</small></div>${r ? `<span class="tag tag-ok">${icon('check', 'icon-xs')}已記錄</span>` : ''}
+                <div class="er-timers">${timerChecks(a, date, 'et-')}</div></div>
               <div class="er-prev"><span class="er-label">上次 CF Bal</span>${prev ? `<b>${fmt(prev.balance)}</b><small>${fmtDate(prev.date)}${D.daysBetween(prev.date, date) > 1 ? `（${D.daysBetween(prev.date, date)} 天前）` : ''}</small>` : '<small class="muted">無（第一筆）</small>'}</div>
               <div class="field er-bal"><label class="er-label" for="b-${a.id}">CF Bal</label>
                 <div class="input-group"><input id="b-${a.id}" class="input num" name="balance" inputmode="numeric" autocomplete="off" placeholder="${prev ? fmt(prev.balance) : '例如 12,345'}" value="${val(r && r.balance)}">
@@ -1689,12 +1989,14 @@
       </section>`;
 
     const rows = $$('.entry-row', view);
+    const timerSnap = (row) => TIMER_KINDS.map((k) => { const b = row.querySelector(`[name="et-${k}"]`); return b ? (b.checked ? '1' : '0') : '-'; }).join('');
     const snapshot = (row) => ['balance', 'note'].map((k) => {
       const v = row.querySelector(`[name="${k}"]`).value.trim();
       if (k === 'note') return v;
       const p = parseAmount(v);
       return p.error ? 'ERR:' + v : String(p.value);
-    }).join('|');
+    }).join('|') + '|' + timerSnap(row);
+    const originalTimers = new Map(rows.map((row) => [row, timerSnap(row)]));
     const original = new Map(rows.map((row) => [row, snapshot(row)]));
     const isDirty = (row) => snapshot(row) !== original.get(row);
 
@@ -1772,12 +2074,20 @@
 
     $('#saveAll', view).addEventListener('click', () => {
       const values = []; let firstBad = null;
+      // 定時事項的勾選：和 CF Bal 分開處理，只勾不填 CF Bal 也可以存
+      const timerChanges = [];
+      rows.forEach((row) => {
+        if (timerSnap(row) === originalTimers.get(row)) return;
+        TIMER_KINDS.forEach((k) => { const b = row.querySelector(`[name="et-${k}"]`); if (b) timerChanges.push([row.dataset.aid, k, b.checked]); });
+      });
       rows.filter(isDirty).forEach((row) => {
         const aid = row.dataset.aid;
         const get = (k) => row.querySelector(`[name="${k}"]`).value;
         const existing = Store.recordFor(aid, date);
         const allEmpty = ['balance', 'note'].every((k) => !get(k).trim());
         if (allEmpty && !existing) return;
+        // 只改了勾選、CF Bal 和備註沒動：不用重存記錄
+        if (snapshot(row).replace(/\|[^|]*$/, '') === original.get(row).replace(/\|[^|]*$/, '')) return;
         const { errors, value } = Store.validateRecord({ date, accountId: aid, balance: get('balance'), shipped: existing ? existing.shipped : null, note: get('note') });
         if (!get('balance').trim()) errors.balance = existing ? '已有記錄不可清空（要刪除請到「記錄」頁）' : '有填備註時，CF Bal 必填';
         Object.keys(errors).forEach((k) => {
@@ -1790,11 +2100,16 @@
         if (!Object.keys(errors).length) values.push(value);
       });
       if (firstBad) { firstBad.focus(); toast('有欄位需要修正，尚未儲存任何資料', 'error'); return; }
-      if (!values.length) { toast('沒有需要儲存的內容', 'info'); return; }
+      if (!values.length && !timerChanges.length) { toast('沒有需要儲存的內容', 'info'); return; }
       leaveGuard = null;
       safely(() => {
-        const res = Store.saveMany(values);
-        toast(`已儲存 ${values.length} 個帳號（新增 ${res.created}、更新 ${res.updated}）`);
+        const res = values.length ? Store.saveMany(values) : null;
+        let marked = 0;
+        timerChanges.forEach(([aid, k, on]) => { if (Store.markTimer(aid, k, date, on)) marked++; });
+        const parts = [];
+        if (res) parts.push(`${values.length} 個帳號（新增 ${res.created}、更新 ${res.updated}）`);
+        if (marked) parts.push(`${marked} 項續期／領取`);
+        toast(`已儲存 ${parts.join('、') || '（沒有變動）'}`);
       });
     });
   }
@@ -2004,18 +2319,26 @@
 
       if (ui.acctView === 'list') {
         host.innerHTML = `<div class="table-wrap"><table class="table">
-          <thead><tr><th>帳號</th><th>遊戲內 ID</th><th>狀態</th><th class="num">Stock</th><th class="num">近 30 日 Acquired</th><th>最近記錄</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th>帳號</th><th>職業</th><th>遊戲內 ID</th><th>狀態</th><th>Mesos Boost／Union</th><th class="num">Stock</th><th class="num">近 30 日 Acquired</th><th>最近記錄</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead>
           <tbody>${list.map((a) => {
             const x = info.get(a.id);
-            return `<tr class="${a.status !== 'active' ? 'is-inactive' : ''}"><td><span class="cell-acct">${avatar(a, 'xs')}<span>${esc(a.name)}</span></span></td><td>${esc(a.gameId) || '<span class="muted">—</span>'}</td><td>${statusTag(a)}</td>
+            const tm = TIMER_KINDS.map((k) => Store.timerStatus(a, k)).filter((st) => st && st.state !== 'off')
+              .map((st) => `<span class="tm-pill tm-${timerTone(st)}" title="${Store.TIMERS[st.kind].full}">${icon(TIMER_ICON[st.kind], 'icon-xs')}${timerText(st)}</span>`).join('');
+            return `<tr class="${a.status !== 'active' ? 'is-inactive' : ''}"><td><span class="cell-acct">${avatar(a, 'xs')}<span>${esc(a.name)}</span></span></td><td>${jobOf(a) ? esc(jobOf(a).name) : '<span class="muted">—</span>'}</td><td>${esc(a.gameId) || '<span class="muted">—</span>'}</td><td>${statusTag(a)}</td>
+              <td><div class="tm-pills">${tm || '<span class="muted">—</span>'}</div></td>
               <td class="num">${fmt(x.latest && x.latest.balance)}</td><td class="num">${delta(x.st30.sales)}</td><td class="nowrap">${x.latest ? relDays(x.latest.date) : '<span class="muted">—</span>'}</td>
               <td class="note-cell">${esc(a.note) || '<span class="muted">—</span>'}</td><td class="actions-col">${actions(a)}</td></tr>`;
           }).join('')}</tbody></table></div>`;
       } else {
         host.innerHTML = `<div class="acct-grid">${list.map((a) => {
           const x = info.get(a.id);
-          return `<article class="acct-card ${a.status !== 'active' ? 'is-inactive' : ''}">
-            <header class="acct-head">${avatar(a)}<div class="grow"><h3>${esc(a.name)}</h3><p>${a.gameId ? `ID：${esc(a.gameId)}` : '未填遊戲內 ID'}</p></div>${statusTag(a)}</header>
+          const j = jobOf(a);
+          const jt = j ? JOB_TYPES[j.type] : null;
+          return `<article class="acct-card ${a.status !== 'active' ? 'is-inactive' : ''} ${j || a.avatar ? 'has-hero' : ''}" ${jt ? `style="--g1:${jt.g[0]};--g2:${jt.g[1]}"` : ''}>
+            <header class="acct-head">${a.avatar || j ? charStage(a) : avatar(a, 'hero')}<div class="grow"><h3>${esc(a.name)}</h3>
+              <p>${j ? `<span class="job-name">${esc(j.name)}</span><span class="job-sub">${JOB_TYPES[j.type].label} · ${JOB_BRANCHES[j.branch].label}</span>` : `<button type="button" class="link-btn" data-edit-account="${a.id}">選擇職業</button>`}</p>
+              <p class="muted">${a.gameId ? `ID：${esc(a.gameId)}` : '未填遊戲內 ID'}</p></div>${statusTag(a)}</header>
+            ${a.status === 'active' ? `<div class="timer-rows">${TIMER_KINDS.map((k) => timerRow(a, k)).join('')}</div>` : ''}
             <p class="acct-note">${esc(a.note) || '<span class="muted">沒有備註</span>'}</p>
             <div class="acct-stats">
               <div><span>Stock（CF Bal）</span><b>${fmt(x.latest && x.latest.balance)}</b></div>
@@ -2031,6 +2354,7 @@
         safely(() => { Store.updateAccount(a.id, { status: a.status === 'active' ? 'inactive' : 'active' }); toast(`${a.name} 已${a.status === 'active' ? '重新啟用' : '停用'}`); });
       }));
       $$('[data-del-account]', host).forEach((b) => b.addEventListener('click', () => deleteAccountFlow(Store.account(b.dataset.delAccount))));
+      bindTimerButtons(host);
     }
 
     $$('[data-filter]', view).forEach((b) => b.addEventListener('click', () => {
@@ -2050,10 +2374,26 @@
 
   function openAccountModal(account) {
     const a = account || { name: '', gameId: '', note: '', status: 'active' };
+    const track = a.track || { boost: true, union: true };
+    let pic = a.avatar || '';
+    const jobOptions = Object.keys(JOB_BRANCHES).map((b) => `<optgroup label="${JOB_BRANCHES[b].label}">${JOBS.filter((j) => j.branch === b)
+      .map((j) => `<option value="${j.id}" ${a.job === j.id ? 'selected' : ''}>${esc(j.name)}（${JOB_TYPES[j.type].label}）</option>`).join('')}</optgroup>`).join('');
     const m = openModal({
       title: account ? '編輯帳號' : '新增帳號',
       body: `<form class="form" id="accForm" novalidate>
+        <div class="acc-hero" id="af-hero"></div>
         <div class="field"><label for="af-name">帳號名稱 <em class="req">必填</em></label><input id="af-name" name="name" class="input" maxlength="40" value="${esc(a.name)}" placeholder="例如：主帳號、小號 A"><span class="field-error"></span></div>
+        <div class="field"><label for="af-job">職業（MapleStory SEA）</label>
+          <select id="af-job" name="job" class="input"><option value="">不選</option>${jobOptions}</select>
+          <span class="field-hint">選了會顯示這個職業的徽章。也可以上傳自己角色的截圖當頭像。</span></div>
+        <div class="field"><span class="field-label">角色圖片</span>
+          <div class="pic-row"><label class="btn btn-sm">${icon('upload')}上傳圖片<input type="file" id="af-pic" accept="image/png,image/jpeg,image/webp" hidden></label>
+          <button type="button" class="btn btn-sm btn-ghost" id="af-pic-clear">移除圖片</button></div>
+          <span class="field-hint">放你角色的遊戲截圖（去背的 PNG 最好看），會站在平台上像遊戲裡一樣。只存在你的帳本裡（跟著雲端同步），不會放到 GitHub。</span><span class="field-error" data-err="avatar"></span></div>
+        <fieldset class="field"><legend>提醒</legend>
+          <label class="check-row"><input type="checkbox" name="trackBoost" ${track.boost !== false ? 'checked' : ''}><span><b>Artificial Boost - Mesos Drop Rate</b><small>每 30 天續期一次，快到期時提醒</small></span></label>
+          <label class="check-row"><input type="checkbox" name="trackUnion" ${track.union !== false ? 'checked' : ''}><span><b>Maple Union Coin</b><small>每 3 天領一次，可以領時提醒</small></span></label>
+        </fieldset>
         <div class="field"><label for="af-gid">遊戲內 ID</label><input id="af-gid" name="gameId" class="input" maxlength="60" value="${esc(a.gameId)}" placeholder="例如：TW-100231"><span class="field-hint">匯入 CSV 時可用來對應帳號。</span><span class="field-error"></span></div>
         <div class="field"><label for="af-note">備註</label><textarea id="af-note" name="note" class="input" rows="3" maxlength="300" placeholder="伺服器、角色、用途…">${esc(a.note)}</textarea><span class="field-error"></span></div>
         <fieldset class="field"><legend>狀態</legend>
@@ -2065,12 +2405,33 @@
       footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-save>${account ? '儲存' : '新增帳號'}</button>`,
     });
     const form = $('#accForm', m.el);
+    // 上方預覽：頭像（圖片 > 職業徽章 > 縮寫）和職業名稱
+    const preview = () => {
+      const fake = { ...a, name: form.name.value || a.name || '?', job: form.job.value, avatar: pic };
+      const j = jobOf(fake);
+      $('#af-hero', m.el).innerHTML = `${pic || j ? charStage(fake) : avatar(fake, 'hero')}<div><b>${esc(fake.name)}</b><small>${j ? `${esc(j.name)} · ${JOB_TYPES[j.type].label} · ${JOB_BRANCHES[j.branch].label}` : '還沒選職業'}</small></div>`;
+      $('#af-pic-clear', m.el).hidden = !pic;
+    };
+    form.addEventListener('input', preview);
+    form.addEventListener('change', preview);
+    $('#af-pic', m.el).addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      try { const out = await pickAvatar(file, 260); if (out) { pic = out; preview(); } } catch (err) { toast(err.message, 'error'); }
+    });
+    $('#af-pic-clear', m.el).addEventListener('click', () => { pic = ''; preview(); });
+    preview();
     const save = () => {
-      const input = { name: form.name.value, gameId: form.gameId.value, note: form.note.value, status: form.status.value };
+      const input = {
+        name: form.name.value, gameId: form.gameId.value, note: form.note.value, status: form.status.value,
+        job: form.job.value, avatar: pic, track: { boost: form.trackBoost.checked, union: form.trackUnion.checked },
+      };
       try {
         if (account) { Store.updateAccount(account.id, input); toast('已更新帳號'); } else { const acc = Store.addAccount(input); toast(`已新增帳號「${acc.name}」`); }
         m.close();
       } catch (e) {
+        if (e.fieldErrors && e.fieldErrors.avatar) toast(e.fieldErrors.avatar, 'error');
         if (e.fieldErrors) setFieldErrors(form, e.fieldErrors); else toast(e.message, 'error');
       }
     };

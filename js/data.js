@@ -112,6 +112,7 @@
         colorIndex: Number.isInteger(a.colorIndex) ? a.colorIndex : i % PALETTE.length,
         createdAt: a.createdAt || new Date().toISOString(),
         updatedAt: a.updatedAt || a.createdAt || new Date().toISOString(),
+        ...normAccountExtras(a),
       });
     });
     const seen = new Set();
@@ -167,6 +168,35 @@
       state.shipments.push(ship);
     });
     return state;
+  }
+
+  /* ---------- 角色資料與定時事項 ----------
+   *   job      職業代號（見 app.js 的 JOBS），選填
+   *   avatar   自己上傳的角色圖（縮小後的 data URL），選填
+   *   track    要提醒的定時事項 { boost, union }，預設都要
+   *   timers   定時事項做過的日期 { boost: [...], union: [...] }，只留最近幾次
+   * boost = Artificial Boost - Mesos Drop Rate（30 天一次）；union = Maple Union Coin（3 天領一次）
+   */
+  const TIMERS = {
+    boost: { label: 'Mesos Drop Boost', full: 'Artificial Boost - Mesos Drop Rate', days: 30, soon: 3, done: '續期' },
+    union: { label: 'Union Coin', full: 'Maple Union Coin', days: 3, soon: 0, done: '領取' },
+  };
+  const TIMER_KEEP = 12;
+  const AVATAR_MAX = 120000;
+  const AVATAR_TOTAL_MAX = 650000;
+  function normAccountExtras(a) {
+    const out = {};
+    if (a.job && /^[a-z0-9-]{1,32}$/.test(String(a.job))) out.job = String(a.job);
+    if (typeof a.avatar === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(a.avatar) && a.avatar.length <= AVATAR_MAX) out.avatar = a.avatar;
+    const tr = a.track && typeof a.track === 'object' ? a.track : {};
+    out.track = { boost: tr.boost !== false, union: tr.union !== false };
+    const t = a.timers && typeof a.timers === 'object' ? a.timers : {};
+    out.timers = {};
+    Object.keys(TIMERS).forEach((k) => {
+      const list = Array.isArray(t[k]) ? t[k].filter(isISODate) : [];
+      out.timers[k] = Array.from(new Set(list)).sort().slice(-TIMER_KEEP);
+    });
+    return out;
   }
 
   function nextColorIndex(state) {
@@ -406,10 +436,67 @@
       else if (this.state.accounts.some((a) => a.id !== excludeId && a.name.toLowerCase() === name.toLowerCase())) errors.name = '已經有同名的帳號';
       if (gameId.length > 60) errors.gameId = '遊戲內 ID 最多 60 個字';
       else if (gameId && this.state.accounts.some((a) => a.id !== excludeId && a.gameId && a.gameId.toLowerCase() === gameId.toLowerCase())) errors.gameId = '已經有帳號使用這個遊戲內 ID';
+      if (typeof input.avatar === 'string' && input.avatar && input.avatar.length > AVATAR_MAX) errors.avatar = '圖片太大了，請換一張小一點的';
+      // 帳號資料在雲端是同一份文件（上限約 1MB），所有角色圖加起來要留空間
+      else if (input.avatar) {
+        const others = this.state.accounts.filter((a) => a.id !== excludeId).reduce((t, a) => t + (a.avatar ? a.avatar.length : 0), 0);
+        if (others + input.avatar.length > AVATAR_TOTAL_MAX) errors.avatar = '角色圖片加起來太大了，請先移除其他帳號的圖片，或換一張簡單一點的（去背 PNG 通常比較小）';
+      }
+      const extras = normAccountExtras(input);
+      if (!input.avatar) delete extras.avatar;
+      if (!input.job) delete extras.job;
       return {
         errors,
-        value: { name, gameId, note: String(input.note || '').trim().slice(0, 300), status: input.status === 'inactive' ? 'inactive' : 'active' },
+        value: { name, gameId, note: String(input.note || '').trim().slice(0, 300), status: input.status === 'inactive' ? 'inactive' : 'active', ...extras },
       };
+    },
+
+    /* 定時事項（Mesos Drop Boost 續期、Union Coin 領取） */
+    TIMERS,
+    // on = true：記下 date 做過；false：取消那天的記錄
+    markTimer(accountId, kind, date, on = true) {
+      if (!TIMERS[kind]) throw new Error('不明的事項');
+      const d = normalizeDate(date);
+      if (!d) throw new Error('日期不正確');
+      const acc = this.account(accountId);
+      if (!acc) throw new Error('找不到這個帳號');
+      const has = ((acc.timers || {})[kind] || []).includes(d);
+      if (has === !!on) return false;
+      return this._commit((s) => {
+        const x = s.accounts.find((a) => a.id === accountId);
+        x.timers = x.timers || {};
+        const list = (x.timers[kind] || []).filter((v) => v !== d);
+        if (on) list.push(d);
+        x.timers[kind] = list.sort().slice(-TIMER_KEEP);
+        x.updatedAt = nowISO();
+        return true;
+      });
+    },
+    // 某帳號某事項的狀態：last 上次做的日期、due 下次到期日、left 還剩幾天（負數 = 已過期）
+    //   state：off 不追蹤／none 還沒記錄／overdue 已過期／due 今天到期／soon 快到期／ok
+    timerStatus(acc, kind, today = todayISO()) {
+      const def = TIMERS[kind];
+      if (!acc || !def) return null;
+      if (acc.track && acc.track[kind] === false) return { kind, state: 'off' };
+      const list = ((acc.timers || {})[kind] || []).filter((d) => d <= today);
+      const last = list.length ? list[list.length - 1] : null;
+      if (!last) return { kind, state: 'none', last: null };
+      const due = addDays(last, def.days);
+      const left = daysBetween(today, due);
+      const state = left < 0 ? 'overdue' : left === 0 ? 'due' : left <= def.soon ? 'soon' : 'ok';
+      return { kind, state, last, due, left, doneToday: last === today };
+    },
+    // 需要處理的定時事項（只看啟用中的帳號）：已過期、今天到期、快到期、還沒記錄過
+    timerAlerts(today = todayISO()) {
+      const out = [];
+      this.state.accounts.filter((a) => a.status === 'active').forEach((a) => {
+        Object.keys(TIMERS).forEach((k) => {
+          const st = this.timerStatus(a, k, today);
+          if (st && ['overdue', 'due', 'soon', 'none'].includes(st.state)) out.push({ account: a, ...st });
+        });
+      });
+      const rank = { overdue: 0, due: 1, soon: 2, none: 3 };
+      return out.sort((x, y) => rank[x.state] - rank[y.state] || (x.left || 0) - (y.left || 0));
     },
 
     addAccount(input) {
@@ -428,7 +515,13 @@
       if (!current) throw new Error('找不到這個帳號');
       const { errors, value } = this.validateAccount({ ...current, ...input }, id);
       if (Object.keys(errors).length) throw fieldError(errors);
-      return this._commit((s) => { Object.assign(s.accounts.find((a) => a.id === id), value, { updatedAt: nowISO() }); });
+      return this._commit((s) => {
+        const x = s.accounts.find((a) => a.id === id);
+        Object.assign(x, value, { updatedAt: nowISO() });
+        // 清掉的職業／圖片要真的拿掉
+        if (!value.job) delete x.job;
+        if (!value.avatar) delete x.avatar;
+      });
     },
 
     deleteAccount(id) {
