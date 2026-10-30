@@ -1,6 +1,6 @@
 /* 離線快取：App 本身的檔案先存起來，沒有網路也能開啟
  * 更新程式時把 VERSION 改掉，手機下次連上網就會換成新版 */
-const VERSION = 'v11';
+const VERSION = 'v12';
 const APP_CACHE = `gct-app-${VERSION}`;
 const FONT_CACHE = 'gct-fonts';
 const APP_FILES = [
