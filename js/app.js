@@ -521,7 +521,7 @@
   function noAccountsState() {
     return emptyState({
       title: '先建立你的第一個帳號',
-      text: '新增遊戲帳號後，每天記錄 CF Bal 和出貨，就會自動算出每天的 Sales，並比較各帳號。想先看看效果，也可以載入範例資料（之後可在「設定與備份」清除）。',
+      text: '新增遊戲帳號後，每天記錄 CF Bal 和出貨，就會自動算出每天的 Stock Acquired，並比較各帳號。想先看看效果，也可以載入範例資料（之後可在「設定與備份」清除）。',
       actions: `<button class="btn btn-primary" data-action="new-account">${icon('plus')}新增帳號</button><button class="btn" data-action="demo">載入範例資料</button>`,
     });
   }
@@ -746,29 +746,29 @@
       let earnIds = ids; let capNote = '';
       if (ids.length > 8) {
         earnIds = ids.slice().sort((a, b) => Math.abs(stats.get(b).sales || 0) - Math.abs(stats.get(a).sales || 0)).slice(0, 8);
-        capNote = `<p class="card-note">${icon('info')}帳號較多，只顯示期間 Sales 最多的 8 個；其餘請用上方帳號篩選查看。</p>`;
+        capNote = `<p class="card-note">${icon('info')}帳號較多，只顯示期間 Stock Acquired 最多的 8 個；其餘請用上方帳號篩選查看。</p>`;
       }
 
       $('#dashBody', view).innerHTML = `
         <article class="card span-2">
           <header class="card-head"><div><h3>每日 Stock 庫存</h3><p class="card-sub">所選 ${ids.length} 個帳號的 CF Bal 加總</p></div></header>
           <div id="stockChart"></div>
-          <details class="calc-note"><summary>${icon('info')}計算方式</summary><p>每天把所選帳號「當天或之前最近一次」的 CF Bal 加總。某帳號當天沒記錄時沿用前一次的 CF Bal（游標提示會標示幾個帳號是沿用的）；還沒有任何記錄的帳號不計入，不會被當成 0。出貨會讓 Stock 下降，但不影響 Sales。</p></details>
+          <details class="calc-note"><summary>${icon('info')}計算方式</summary><p>每天把所選帳號「當天或之前最近一次」的 CF Bal 加總。某帳號當天沒記錄時沿用前一次的 CF Bal（游標提示會標示幾個帳號是沿用的）；還沒有任何記錄的帳號不計入，不會被當成 0。出貨會讓 Stock 下降，但不影響 Stock Acquired。</p></details>
         </article>
         <article class="card" id="rankCard"></article>
         <article class="card span-3">
           <header class="card-head">
-            <div><h3>各帳號 Sales</h3><p class="card-sub">${ui.trendMode === 'daily' ? '每天賺多少（沒記錄的日子留白）' : '從期間第一天累計，方便比較誰賺得多'}</p></div>
-            <div class="seg seg-sm" data-seg="dash-trend" role="group" aria-label="Sales 顯示方式">
-              <button type="button" class="seg-btn ${ui.trendMode === 'daily' ? 'active' : ''}" data-trend="daily">每日 Sales</button>
-              <button type="button" class="seg-btn ${ui.trendMode === 'cumulative' ? 'active' : ''}" data-trend="cumulative">累計 Sales</button>
+            <div><h3>各帳號 Stock Acquired</h3><p class="card-sub">${ui.trendMode === 'daily' ? '每天賺多少（沒記錄的日子留白）' : '從期間第一天累計，方便比較誰賺得多'}</p></div>
+            <div class="seg seg-sm" data-seg="dash-trend" role="group" aria-label="Stock Acquired 顯示方式">
+              <button type="button" class="seg-btn ${ui.trendMode === 'daily' ? 'active' : ''}" data-trend="daily">每日</button>
+              <button type="button" class="seg-btn ${ui.trendMode === 'cumulative' ? 'active' : ''}" data-trend="cumulative">累計</button>
             </div>
           </header>
           <div class="legend">${earnIds.map((id) => { const a = Store.account(id); return `<span class="legend-item">${swatch(a)}${esc(a.name)}</span>`; }).join('')}</div>
           <div id="earnChart"></div>
           ${capNote}
           <details class="calc-note"><summary>${icon('info')}計算方式</summary>
-            <p><b>Sales</b> = 這次 CF Bal − 上次 CF Bal ＋ 這次記的出貨，算在${salesPrev() ? '記錄日的<b>前一天</b>（今天記的 = 昨天賺的）' : '記錄當天'}。出貨只會讓 Stock 變少，不會扣 Sales。</p>
+            <p><b>Stock Acquired</b> = 這次 CF Bal − 上次 CF Bal ＋ 這次記的出貨，算在${salesPrev() ? '記錄日的<b>前一天</b>（今天記的 = 昨天賺的）' : '記錄當天'}。出貨只會讓 Stock 變少，不會扣 Stock Acquired。</p>
             <p>沒有記錄的日子不畫點，不當成 0。如果和上次記錄相隔多天，那一點代表那幾天的合計，游標提示會標示「跨 N 天」。</p>
           </details>
         </article>
@@ -802,12 +802,12 @@
         return { name: a.name, color: color(a), values: Calc.cumulativeSales(id, sDates) };
       });
       Charts.lineChart($('#earnChart', view), {
-        dates: sDates, height: 280, includeZero: true, dots: isDaily, smooth: true, ariaLabel: '各帳號 Sales',
+        dates: sDates, height: 280, includeZero: true, dots: isDaily, smooth: true, ariaLabel: '各帳號 Stock Acquired',
         series: earnSeries,
-        emptyText: '此期間還算不出 Sales（每個帳號至少要記兩次 CF Bal）',
+        emptyText: '此期間還算不出 Stock Acquired（每個帳號至少要記兩次 CF Bal）',
         tooltip: (i) => {
           const rows = earnSeries.filter((s) => s.values[i] != null).sort((a, b) => b.values[i] - a.values[i]);
-          if (!rows.length) return tipHead(sDates[i]) + `<div class="tip-note">${isDaily ? '這天沒有 Sales 資料' : '尚無資料'}</div>`;
+          if (!rows.length) return tipHead(sDates[i]) + `<div class="tip-note">${isDaily ? '這天沒有 Stock Acquired 資料' : '尚無資料'}</div>`;
           return tipHead(sDates[i]) + rows.map((s) => {
             const x = s.infos && s.infos[i];
             const notes = [x && x.gap > 1 ? `跨 ${x.gap} 天` : '', x && x.shipped ? `出貨 ${fmt(x.shipped)}` : ''].filter(Boolean).map((t) => `<small>${t}</small>`).join('');
@@ -852,7 +852,7 @@
       <div class="field"><label for="cf-bal">CF Bal</label>
         <input id="cf-bal" name="balance" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" data-autofocus>
         <span class="field-hint" id="cf-hint"></span><span class="field-error"></span></div>
-      <div class="field field-sale"><label for="cf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">銷售所得</span></label>
+      <div class="field field-sale"><label for="cf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="cf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填，例如 2B">
         <span class="field-hint">這次 CF Bal 增加的部分裡，有多少是賣東西換來的。只是標示來源，不會改變 CF Bal、Stock 或購入的計算。</span><span class="field-error"></span></div>
       <div class="calc-box" id="cf-calc" aria-live="polite"></div>
@@ -890,9 +890,9 @@
       const sold = parseAmount(form.fromSales.value);
       calc.innerHTML = `<div class="calc-line"><span>Stock 變化</span><b>${delta(net)}</b></div>
         <div class="calc-line"><span>出貨</span><b>${fmt(shipped)}</b>${ships.length ? `<small>${ships.length} 筆出貨記錄</small>` : ''}</div>
-        <div class="calc-line"><span>Sales</span><b class="sales-big">${delta(sales)}</b><small>算在 ${fmtDate(salesDateFor(date))}</small></div>
+        <div class="calc-line"><span>Stock Acquired</span><b class="sales-big">${delta(sales)}</b><small>算在 ${fmtDate(salesDateFor(date))}</small></div>
         ${!sold.error && sold.value ? `<div class="calc-line"><span>其中出售所得</span><b>${fmt(sold.value)}</b><small>只是標示，已包含在上面</small></div>` : ''}
-        ${sales < 0 ? `<div class="calc-status warn">${icon('alert')}<span>Sales 是負數：是不是出貨忘了記？可以照樣儲存，之後補記出貨會自動更正。</span></div>` : ''}`;
+        ${sales < 0 ? `<div class="calc-status warn">${icon('alert')}<span>Stock Acquired 是負數：是不是出貨忘了記？可以照樣儲存，之後補記出貨會自動更正。</span></div>` : ''}`;
     }
 
     function save(next) {
@@ -961,16 +961,16 @@
       // 這筆出貨會算進哪一次 CF Bal（已經有就直接算，沒有就等下一次記 CF Bal）
       const recs = Calc.list(a);
       const target = salesPrev() ? recs.find((r) => r.date > date) : recs.find((r) => r.date >= date);
-      $('#sh-help', m.el).innerHTML = `${icon('info')}<span>出貨只會讓 Stock 變少，<b>不扣 Sales</b>。${target
-        ? `這筆會加回 <b>${fmtDate(salesDateFor(target.date))}</b> 的 Sales。`
-        : `記下一次 CF Bal 時會自動加回 Sales（算在 <b>${fmtDate(date)}</b>）。`}</span>`;
+      $('#sh-help', m.el).innerHTML = `${icon('info')}<span>出貨只會讓 Stock 變少，<b>不扣 Stock Acquired</b>。${target
+        ? `這筆會加回 <b>${fmtDate(salesDateFor(target.date))}</b> 的 Stock Acquired。`
+        : `記下一次 CF Bal 時會自動加回 Stock Acquired（算在 <b>${fmtDate(date)}</b>）。`}</span>`;
       const pend = new Set(Calc.pendingShipments(a).map((s) => s.id));
       const list = Calc.shipments(a).slice().reverse();
       $('#sh-list', m.el).innerHTML = list.length ? `<div class="ship-list-head"><b>最近出貨</b><small>${esc(Store.account(a).name)} · 共 ${list.length} 筆</small></div>
         <ul class="ship-list">${list.slice(0, 8).map((s) => `<li>
           <span class="ship-date">${fmtDate(s.date)}</span>
           <span class="ship-amt${s.rejected ? ' is-rejected' : ''}">${fmt(s.amount)}</span>
-          <span class="ship-note">${esc(s.note)}${s.rejected ? `<span class="tag tag-low" title="${esc(s.rejected.reason)}${s.rejected.note ? '：' + esc(s.rejected.note) : ''}">已退回</span>` : ''}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Sales</span>' : ''}${shipPriced(s.id) ? '<span class="tag tag-ok">已定價</span>' : ''}</span>
+          <span class="ship-note">${esc(s.note)}${s.rejected ? `<span class="tag tag-low" title="${esc(s.rejected.reason)}${s.rejected.note ? '：' + esc(s.rejected.note) : ''}">已退回</span>` : ''}${pend.has(s.id) ? '<span class="tag tag-muted">待算進 Stock Acquired</span>' : ''}${shipPriced(s.id) ? '<span class="tag tag-ok">已定價</span>' : ''}</span>
           <button type="button" class="icon-btn danger" data-del-ship="${s.id}" aria-label="刪除這筆出貨" title="刪除">${icon('trash')}</button></li>`).join('')}</ul>` : '';
       $$('[data-del-ship]', m.el).forEach((b) => b.addEventListener('click', async () => {
         const s = Store.state.shipments.find((x) => x.id === b.dataset.delShip);
@@ -1001,9 +1001,9 @@
   }
 
   const RANK_METRICS = {
-    sales: { label: '總 Sales', desc: '期間內每天 Sales 的總和（Sales = CF Bal 變化 ＋ 出貨）。' },
-    avg: { label: '每日平均', desc: '總 Sales ÷ 涵蓋天數。記錄天數不同的帳號，用這個比較較公平。' },
-    shipped: { label: '出貨', desc: '期間內出貨的總和。出貨會讓 Stock 變少，但不影響 Sales。' },
+    sales: { label: '總 Acquired', desc: '期間內每天 Stock Acquired 的總和（Stock Acquired = CF Bal 變化 ＋ 出貨）。' },
+    avg: { label: '每日平均', desc: '總 Stock Acquired ÷ 涵蓋天數。記錄天數不同的帳號，用這個比較較公平。' },
+    shipped: { label: '出貨', desc: '期間內出貨的總和。出貨會讓 Stock 變少，但不影響 Stock Acquired。' },
   };
 
   function renderRanking(card, ids, stats, range, rerender) {
@@ -1021,7 +1021,7 @@
       return `<div class="rank-bar ${hasNeg ? 'has-mid' : ''}"><span style="left:${left}%;width:${Math.max(pct, 0.8)}%;background:${c};transform-origin:${origin};--i:${k}"></span></div>`;
     };
     card.innerHTML = `
-      <header class="card-head"><div><h3>帳號 Sales 排行</h3><p class="card-sub">${fmtDate(range.start)} – ${fmtDate(range.end)}</p></div></header>
+      <header class="card-head"><div><h3>帳號 Stock Acquired 排行</h3><p class="card-sub">${fmtDate(range.start)} – ${fmtDate(range.end)}</p></div></header>
       <div class="seg seg-sm seg-block" data-seg="dash-rank" role="group" aria-label="排名指標">
         ${Object.keys(RANK_METRICS).map((k) => `<button type="button" class="seg-btn ${metric === k ? 'active' : ''}" data-metric="${k}">${RANK_METRICS[k].label}</button>`).join('')}
       </div>
@@ -1034,7 +1034,7 @@
           <div class="rank-main">
             <div class="rank-top">${swatch(r.a)}<span class="rank-name">${esc(r.a.name)}</span>${badge}<span class="grow"></span>${metric === 'shipped' ? `<span class="delta">${fmt(v)}</span>` : delta(v, metric === 'avg' ? ' /日' : '')}</div>
             ${bar(v, color(r.a), k)}
-            <div class="rank-sub">記錄 ${r.st.days} 天 · 涵蓋 ${r.st.covered} 天${metric !== 'shipped' && r.st.shipped ? ` · 出貨 ${fmt(r.st.shipped)}` : ''}${r.st.negatives ? ` · <span class="warn-text">${r.st.negatives} 筆 Sales 是負數</span>` : ''}</div>
+            <div class="rank-sub">記錄 ${r.st.days} 天 · 涵蓋 ${r.st.covered} 天${metric !== 'shipped' && r.st.shipped ? ` · 出貨 ${fmt(r.st.shipped)}` : ''}${r.st.negatives ? ` · <span class="warn-text">${r.st.negatives} 筆 Stock Acquired 是負數</span>` : ''}</div>
           </div>
         </li>`;
       }).join('')}</ol>` : '<div class="mini-empty">此期間沒有可比較的資料</div>'}
@@ -1050,7 +1050,7 @@
       .filter((x) => x && idSet.has(x.record.accountId) && x.salesDate >= range.start && x.salesDate <= range.end && x.negative)
       .sort((a, b) => (a.record.date < b.record.date ? 1 : -1));
     card.innerHTML = `
-      <header class="card-head"><div><h3>需要檢查的記錄</h3><p class="card-sub">Sales 是負數：CF Bal 少掉的比出貨還多</p></div>
+      <header class="card-head"><div><h3>需要檢查的記錄</h3><p class="card-sub">Stock Acquired 是負數：CF Bal 少掉的比出貨還多</p></div>
         ${list.length ? `<a class="btn btn-sm btn-ghost" href="#/records?negative=1">查看全部 ${list.length} 筆</a>` : ''}</header>
       ${list.length ? `<p class="metric-desc">${icon('info')}<span>常見原因：出貨忘了填、CF Bal 打錯，或在遊戲裡花掉了。點一下可以直接修改；系統不會自動改你的數字。</span></p>
         <ul class="check-list">${list.slice(0, 6).map((x) => {
@@ -1059,9 +1059,9 @@
             <span class="check-icon is-warn">${icon('alert')}</span>
             <span class="check-main"><b>${esc(a.name)} · ${fmtDate(x.record.date)} 記錄</b>
               <small>CF Bal 變化 ${fmtSigned(x.net)}，出貨 ${fmt(x.shipped)}${x.gap > 1 ? `，跨 ${x.gap} 天` : ''}</small></span>
-            <span class="check-diff neg">Sales ${fmtSigned(x.sales)}</span>
+            <span class="check-diff neg">Acquired ${fmtSigned(x.sales)}</span>
           </button></li>`;
-        }).join('')}</ul>` : `<div class="mini-empty ok">${icon('check')}此期間沒有負數的 Sales</div>`}`;
+        }).join('')}</ul>` : `<div class="mini-empty ok">${icon('check')}此期間沒有負數的 Stock Acquired</div>`}`;
   }
 
   function renderTodayCard(card) {
@@ -1074,7 +1074,7 @@
       <ul class="today-list">${accts.map((a) => {
         const r = Store.recordFor(a.id, today);
         const x = r && Calc.info(r.id);
-        return `<li>${swatch(a)}<span class="grow">${esc(a.name)}</span>${r ? `<span class="today-val" title="CF Bal ${fmt(r.balance)}">${x && x.sales != null ? `Sales ${fmtSigned(x.sales)}` : `CF ${fmt(r.balance)}`}</span><span class="tag tag-ok">${icon('check', 'icon-xs')}已記錄</span>` : '<span class="tag tag-muted">未記錄</span>'}</li>`;
+        return `<li>${swatch(a)}<span class="grow">${esc(a.name)}</span>${r ? `<span class="today-val" title="CF Bal ${fmt(r.balance)}">${x && x.sales != null ? `Acquired ${fmtSigned(x.sales)}` : `CF ${fmt(r.balance)}`}</span><span class="tag tag-ok">${icon('check', 'icon-xs')}已記錄</span>` : '<span class="tag tag-muted">未記錄</span>'}</li>`;
       }).join('') || '<li class="muted">沒有啟用中的帳號</li>'}</ul>
       <a class="btn btn-primary btn-block" href="#/entry">${icon('entry')}前往每日錄入</a>`;
   }
@@ -1332,11 +1332,11 @@
   function openGoalModal() {
     const goal = Store.state.settings.monthlyGoal;
     const m = openModal({
-      title: '每月 Sales 目標', size: 'modal-sm',
+      title: '每月 Stock Acquired 目標', size: 'modal-sm',
       body: `<form class="form" id="goalForm" novalidate>
         <div class="field"><label for="gf-goal">每月想賺多少${cur()}？</label>
           <input id="gf-goal" name="goal" class="input input-lg num" inputmode="numeric" autocomplete="off" placeholder="例如 50,000" value="${goal ? fmt(goal) : ''}">
-          <span class="field-hint">以所選帳號本月的 Sales（CF Bal 變化 ＋ 出貨）計算進度。留空並儲存可取消目標。</span><span class="field-error"></span></div>
+          <span class="field-hint">以所選帳號本月的 Stock Acquired（CF Bal 變化 ＋ 出貨）計算進度。留空並儲存可取消目標。</span><span class="field-error"></span></div>
       </form>`,
       footer: '<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-primary" data-save>儲存</button>',
     });
@@ -1516,9 +1516,9 @@
           <input id="rf-ship" name="shipped" class="input input-lg num" inputmode="numeric" autocomplete="off" placeholder="0" value="${val(init.shipped)}">
           <span class="field-hint" id="rf-ship-hint">平常用「出貨」按鈕記，會自動算進來</span><span class="field-error"></span></div>
       </div>
-      <div class="field field-sale"><label for="rf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">銷售所得</span></label>
+      <div class="field field-sale"><label for="rf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="rf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填" value="${val(init.fromSales)}">
-        <span class="field-hint">這次增加的部分裡，有多少是賣東西換來的。只是標示，不會改變 CF Bal、Stock 或 Sales。</span><span class="field-error"></span></div>
+        <span class="field-hint">這次增加的部分裡，有多少是賣東西換來的。只是標示，不會改變 CF Bal、Stock 或 Stock Acquired。</span><span class="field-error"></span></div>
       <div class="calc-box" id="rf-calc" aria-live="polite"></div>
       <div class="field"><label for="rf-note">備註</label><input id="rf-note" name="note" class="input" maxlength="200" value="${esc(init.note)}" placeholder="例如：出貨給某某、活動加倍"><span class="field-error"></span></div>
     </form>`;
@@ -1565,7 +1565,7 @@
         const gap = D.daysBetween(prev.date, date);
         lines.push(`<div class="calc-line"><span>上次 CF Bal</span><b>${fmt(prev.balance)}</b><small>${fmtDate(prev.date)}${gap > 1 ? `，相隔 ${gap} 天` : ''}</small></div>`);
       } else {
-        lines.push('<div class="calc-line"><span>上次 CF Bal</span><b class="muted">無（這是這個帳號第一筆，還算不出 Sales）</b></div>');
+        lines.push('<div class="calc-line"><span>上次 CF Bal</span><b class="muted">無（這是這個帳號第一筆，還算不出 Stock Acquired）</b></div>');
       }
       const net = prev && !bal.error && bal.value != null ? bal.value - prev.balance : null;
       const ships = Calc.shipmentsFor(v.accountId, date);
@@ -1574,18 +1574,18 @@
       let status = '';
       if (prev) {
         if (net == null || shipped == null) {
-          lines.push('<div class="calc-line"><span>Sales</span><b class="muted">輸入 CF Bal 後自動計算</b></div>');
+          lines.push('<div class="calc-line"><span>Stock Acquired</span><b class="muted">輸入 CF Bal 後自動計算</b></div>');
         } else {
           const sales = net + shipped;
           const gap = D.daysBetween(prev.date, date);
           lines.push(`<div class="calc-line"><span>Stock 變化</span><b>${delta(net)}</b><small>= ${fmt(bal.value)} − ${fmt(prev.balance)}</small></div>`);
-          lines.push(`<div class="calc-line"><span>Sales</span><b>${delta(sales)}</b><small>= Stock 變化 ${fmtSigned(net)} ＋ 出貨 ${fmt(shipped)}，算在 <b>${fmtDate(salesDateFor(date))}</b>${gap > 1 ? `（跨 ${gap} 天）` : ''}</small></div>`);
-          if (sales < 0) status = `<div class="calc-status warn">${icon('alert')}<span>Sales 是負數：CF Bal 少掉的比出貨還多。是不是出貨忘了填，或 CF Bal 打錯？系統不會自動修改，仍可照樣儲存。</span></div>`;
-          else if (shipped) status = `<div class="calc-status ok">${icon('check')}出貨 ${fmt(shipped)} 已加回 Sales，不會算成少賺</div>`;
+          lines.push(`<div class="calc-line"><span>Stock Acquired</span><b>${delta(sales)}</b><small>= Stock 變化 ${fmtSigned(net)} ＋ 出貨 ${fmt(shipped)}，算在 <b>${fmtDate(salesDateFor(date))}</b>${gap > 1 ? `（跨 ${gap} 天）` : ''}</small></div>`);
+          if (sales < 0) status = `<div class="calc-status warn">${icon('alert')}<span>Stock Acquired 是負數：CF Bal 少掉的比出貨還多。是不是出貨忘了填，或 CF Bal 打錯？系統不會自動修改，仍可照樣儲存。</span></div>`;
+          else if (shipped) status = `<div class="calc-status ok">${icon('check')}出貨 ${fmt(shipped)} 已加回 Stock Acquired，不會算成少賺</div>`;
         }
       }
       if (next && !bal.error && bal.value != null) {
-        lines.push(`<div class="calc-line subtle"><span>影響</span><small>下一筆（${fmtDate(next.date)}）的 Sales 會變成 ${fmtSigned(next.balance - bal.value + ((Calc.info(next.id) || {}).shipped || 0))}</small></div>`);
+        lines.push(`<div class="calc-line subtle"><span>影響</span><small>下一筆（${fmtDate(next.date)}）的 Stock Acquired 會變成 ${fmtSigned(next.balance - bal.value + ((Calc.info(next.id) || {}).shipped || 0))}</small></div>`);
       }
       calc.innerHTML = lines.join('') + status;
     }
@@ -1633,7 +1633,7 @@
     const a = Store.account(r.accountId);
     const ok = await confirmDialog({
       title: '刪除記錄',
-      message: `確定刪除 <b>${esc(a ? a.name : '')}</b> 在 <b>${fmtDate(r.date)}</b> 的記錄（CF Bal ${fmt(r.balance)}）？<br><small>刪除後，下一筆記錄的 Sales 會改以更早的一筆計算。此動作無法復原。</small>`,
+      message: `確定刪除 <b>${esc(a ? a.name : '')}</b> 在 <b>${fmtDate(r.date)}</b> 的記錄（CF Bal ${fmt(r.balance)}）？<br><small>刪除後，下一筆記錄的 Stock Acquired 會改以更早的一筆計算。此動作無法復原。</small>`,
       confirmText: '刪除', danger: true,
     });
     if (!ok) return false;
@@ -1666,9 +1666,9 @@
           </div>
           <div class="entry-progress"><span>${fmtDateWeek(date)}</span><b>${recorded} / ${accounts.length}</b> 個帳號已記錄</div>
         </div>
-        <p class="help">${icon('info')}<span>每天填各帳號的 <b>CF Bal</b>；出貨用「＋出貨」另外記，會自動算進來。<b>Sales = CF Bal 變化 ＋ 出貨</b>，會自動算出，算在 <b>${fmtDate(salesDateFor(date))}</b>${salesPrev() ? '（前一天）' : ''}。出貨不會扣 Sales。${isIOS ? '用鍵盤上方的 ⌄ 箭頭切換到下一格。' : '在 CF Bal 欄按 <kbd>Enter</kbd> 會跳到下一個帳號。'}</span></p>
+        <p class="help">${icon('info')}<span>每天填各帳號的 <b>CF Bal</b>；出貨用「＋出貨」另外記，會自動算進來。<b>Stock Acquired = CF Bal 變化 ＋ 出貨</b>，會自動算出，算在 <b>${fmtDate(salesDateFor(date))}</b>${salesPrev() ? '（前一天）' : ''}。出貨不會扣 Stock Acquired。${isIOS ? '用鍵盤上方的 ⌄ 箭頭切換到下一格。' : '在 CF Bal 欄按 <kbd>Enter</kbd> 會跳到下一個帳號。'}</span></p>
         <div class="entry-table">
-          <div class="entry-head"><span>帳號</span><span>上次 CF Bal</span><span>今天 CF Bal</span><span>出貨</span><span>Sales（${fmtDate(salesDateFor(date)).slice(5)}）</span><span>備註</span></div>
+          <div class="entry-head"><span>帳號</span><span>上次 CF Bal</span><span>今天 CF Bal</span><span>出貨</span><span>Acquired（${fmtDate(salesDateFor(date)).slice(5)}）</span><span>備註</span></div>
           ${accounts.map((a) => {
             const r = Store.recordFor(a.id, date);
             const prev = Calc.latestBefore(Calc.list(a.id), date);
@@ -1714,11 +1714,11 @@
       const net = prev && !bal.error && bal.value != null ? bal.value - prev.balance : null;
       const parts = [];
       if (bal.value == null || bal.error) parts.push('<span class="muted">—</span>');
-      else if (!prev) parts.push('<small class="muted">第一筆，還算不出 Sales</small>');
+      else if (!prev) parts.push('<small class="muted">第一筆，還算不出 Stock Acquired</small>');
       else {
         const sales = net + shipTotal;
         const gap = D.daysBetween(prev.date, date);
-        parts.push(`<span class="calc-k">Sales</span><b class="sales-val">${delta(sales)}</b>`);
+        parts.push(`<span class="calc-k">Acquired</span><b class="sales-val">${delta(sales)}</b>`);
         parts.push(`<small class="muted">Stock ${fmtSigned(net)}${shipTotal ? ` ＋ 出貨 ${fmt(shipTotal)}` : ''}${gap > 1 ? `，跨 ${gap} 天` : ''}</small>`);
         if (sales < 0) parts.push(`<span class="mini-warn" title="CF Bal 少掉的比出貨還多，是不是出貨忘了填？">${icon('alert', 'icon-xs')}負數</span>`);
       }
@@ -1812,7 +1812,7 @@
     if (!Store.state.records.length) {
       view.innerHTML = emptyState({
         iconName: 'records', title: '還沒有任何記錄',
-        text: '每天記下各帳號的 CF Bal 和出貨，這裡就會列出所有記錄和算出的 Sales，可以搜尋、排序、編輯與匯出。',
+        text: '每天記下各帳號的 CF Bal 和出貨，這裡就會列出所有記錄和算出的 Stock Acquired，可以搜尋、排序、編輯與匯出。',
         actions: `<a class="btn btn-primary" href="#/entry">${icon('entry')}前往每日錄入</a><button class="btn" data-action="new-record">${icon('plus')}新增單筆</button><button class="btn" data-action="import-csv">${icon('upload')}匯入 CSV</button>`,
       });
       return;
@@ -1824,16 +1824,16 @@
           <label class="search">${icon('search')}<input class="input" id="recQ" type="search" placeholder="搜尋帳號、遊戲 ID、備註、日期…" value="${esc(recState.q)}"></label>
           <select class="input" id="recAcc" aria-label="帳號篩選"><option value="">全部帳號</option>${accountOptions(recState.account)}</select>
           <div class="date-filter"><input type="date" class="input" id="recFrom" aria-label="起始日期" value="${recState.from}"><span>–</span><input type="date" class="input" id="recTo" aria-label="結束日期" value="${recState.to}"></div>
-          <label class="chip-toggle"><input type="checkbox" id="recMis" ${recState.negative ? 'checked' : ''}><span>${icon('alert', 'icon-xs')}只看 Sales 負數</span></label>
+          <label class="chip-toggle"><input type="checkbox" id="recMis" ${recState.negative ? 'checked' : ''}><span>${icon('alert', 'icon-xs')}只看 Stock Acquired 負數</span></label>
           <button type="button" class="btn btn-ghost btn-sm" id="recClear">清除篩選</button>
           <span class="grow"></span>
           <button type="button" class="btn btn-sm" data-action="import-csv">${icon('upload')}匯入 CSV</button>
           <button type="button" class="btn btn-sm" id="recExport">${icon('download')}匯出 CSV</button>
         </div>
-        <p class="formula">${icon('info')}<span><b>CF Bal</b> = Stock 庫存　<b>Stock 變化</b> = 這次 CF Bal − 上次 CF Bal　<b>Sales</b> = Stock 變化 ＋ 出貨，算在${salesPrev() ? '記錄日的前一天' : '記錄當天'}。出貨不扣 Sales。「跨 N 天」表示和上次記錄相隔多天。</span></p>
+        <p class="formula">${icon('info')}<span><b>CF Bal</b> = Stock 庫存　<b>Stock 變化</b> = 這次 CF Bal − 上次 CF Bal　<b>Stock Acquired</b> = Stock 變化 ＋ 出貨，算在${salesPrev() ? '記錄日的前一天' : '記錄當天'}。出貨不扣 Stock Acquired。「跨 N 天」表示和上次記錄相隔多天。</span></p>
         <div class="table-wrap"><table class="table" id="recTable">
           <thead><tr>
-            ${[['date', '記錄日'], ['account', '帳號'], ['balance', 'CF Bal', 'num'], ['net', 'Stock 變化', 'num'], ['shipped', '出貨', 'num'], ['sales', 'Sales', 'num'], ['salesDate', 'Sales 日'], ['note', '備註']].map(([k, l, cls]) => `<th class="${cls || ''}" ${k === 'note' ? '' : `aria-sort="${ui.recSort === k ? (ui.recDir === 'asc' ? 'ascending' : 'descending') : 'none'}"`}>${k === 'note' ? l : `<button type="button" class="sort-btn" data-sort="${k}">${l}<span class="sort-ind">${ui.recSort === k ? (ui.recDir === 'asc' ? '▲' : '▼') : ''}</span></button>`}</th>`).join('')}
+            ${[['date', '記錄日'], ['account', '帳號'], ['balance', 'CF Bal', 'num'], ['net', 'Stock 變化', 'num'], ['shipped', '出貨', 'num'], ['sales', 'Acquired', 'num'], ['salesDate', 'Acquired 日'], ['note', '備註']].map(([k, l, cls]) => `<th class="${cls || ''}" ${k === 'note' ? '' : `aria-sort="${ui.recSort === k ? (ui.recDir === 'asc' ? 'ascending' : 'descending') : 'none'}"`}>${k === 'note' ? l : `<button type="button" class="sort-btn" data-sort="${k}">${l}<span class="sort-ind">${ui.recSort === k ? (ui.recDir === 'asc' ? '▲' : '▼') : ''}</span></button>`}</th>`).join('')}
             <th class="actions-col"><span class="sr-only">操作</span></th>
           </tr></thead>
           <tbody></tbody>
@@ -1899,7 +1899,7 @@
         return `<tr class="${x.negative ? 'row-warn' : ''} ${k < 24 ? 'reveal-row' : ''}" style="--i:${k}">
           <td class="nowrap">${fmtDate(r.date)}<small>週${WEEK[D.parseISO(r.date).getDay()]}</small></td>
           <td><span class="cell-acct">${swatch(a)}<span>${esc(a ? a.name : '（已刪除）')}<small>${esc(a && a.gameId ? a.gameId : '')}</small></span></span></td>
-          <td class="num">${fmt(r.balance)}${r.fromSales ? `<small class="cf-sold" title="這次增加的部分中，來自出售東西">銷售所得 ${fmt(r.fromSales)}</small>` : ''}</td>
+          <td class="num">${fmt(r.balance)}${r.fromSales ? `<small class="cf-sold" title="這次增加的部分中，來自出售東西">賣貨 ${fmt(r.fromSales)}</small>` : ''}</td>
           <td class="num">${x.net == null ? '<span class="muted">—</span>' : delta(x.net)}</td>
           <td class="num">${x.shipped ? `${fmt(x.shipped)}${x.shipList && x.shipList.length > 1 ? `<small>${x.shipList.length} 筆</small>` : ''}` : '<span class="muted">—</span>'}</td>
           <td class="num">${salesCell}${x.gap > 1 ? `<small class="gap" title="和上次記錄相隔 ${x.gap} 天，這是 ${x.gap} 天的合計">跨 ${x.gap} 天</small>` : ''}</td>
@@ -1964,7 +1964,7 @@
           <span class="grow"></span>
           <label class="search">${icon('search')}<input class="input" id="acctQ" type="search" placeholder="名稱、遊戲 ID、備註…"></label>
           <select class="input" id="acctSort" aria-label="排序">
-            ${[['manual', '建立順序'], ['name', '名稱'], ['balance', 'Stock（高→低）'], ['earn30', '近 30 日 Sales（高→低）'], ['recent', '最近記錄']].map(([k, l]) => `<option value="${k}" ${ui.acctSort === k ? 'selected' : ''}>${l}</option>`).join('')}
+            ${[['manual', '建立順序'], ['name', '名稱'], ['balance', 'Stock（高→低）'], ['earn30', '近 30 日 Stock Acquired（高→低）'], ['recent', '最近記錄']].map(([k, l]) => `<option value="${k}" ${ui.acctSort === k ? 'selected' : ''}>${l}</option>`).join('')}
           </select>
           <div class="view-toggle" role="group" aria-label="檢視方式">
             <button type="button" class="icon-btn ${ui.acctView === 'grid' ? 'active' : ''}" data-view="grid" aria-label="卡片檢視" title="卡片檢視">${icon('dashboard')}</button>
@@ -2004,7 +2004,7 @@
 
       if (ui.acctView === 'list') {
         host.innerHTML = `<div class="table-wrap"><table class="table">
-          <thead><tr><th>帳號</th><th>遊戲內 ID</th><th>狀態</th><th class="num">Stock</th><th class="num">近 30 日 Sales</th><th>最近記錄</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th>帳號</th><th>遊戲內 ID</th><th>狀態</th><th class="num">Stock</th><th class="num">近 30 日 Acquired</th><th>最近記錄</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead>
           <tbody>${list.map((a) => {
             const x = info.get(a.id);
             return `<tr class="${a.status !== 'active' ? 'is-inactive' : ''}"><td><span class="cell-acct">${avatar(a, 'xs')}<span>${esc(a.name)}</span></span></td><td>${esc(a.gameId) || '<span class="muted">—</span>'}</td><td>${statusTag(a)}</td>
@@ -2022,7 +2022,7 @@
               <div><span>最近記錄</span><b>${x.latest ? relDays(x.latest.date) : '—'}</b></div>
             </div>
             <div class="acct-spark">${Charts.sparkline(x.spark, color(a), 260, 40)}</div>
-            <footer class="acct-foot"><span class="acct-earn">近 30 日 Sales ${delta(x.st30.sales)}</span><span class="grow"></span>${actions(a)}</footer>
+            <footer class="acct-foot"><span class="acct-earn">近 30 日 Stock Acquired ${delta(x.st30.sales)}</span><span class="grow"></span>${actions(a)}</footer>
           </article>`;
         }).join('')}</div>`;
       }
@@ -2110,12 +2110,12 @@
     view.innerHTML = `
       <div class="settings-grid">
         <section class="card">
-          <header class="card-head"><div><h3>一般設定</h3><p class="card-sub">貨幣名稱與 Sales 的計算日</p></div></header>
+          <header class="card-head"><div><h3>一般設定</h3><p class="card-sub">貨幣名稱與 Stock Acquired 的計算日</p></div></header>
           <form class="form" id="setForm" novalidate>
             <div class="field"><label for="sf-cur">貨幣名稱</label>
               <div class="input-group"><input id="sf-cur" name="currencyName" class="input" maxlength="12" value="${esc(s.currencyName)}" placeholder="例如：金幣、鑽石、水晶"><button type="submit" class="btn btn-primary">儲存</button></div>
               <span class="field-error"></span></div>
-            <fieldset class="field"><legend>Sales 算在哪一天</legend>
+            <fieldset class="field"><legend>Stock Acquired 算在哪一天</legend>
               <div class="radio-row">
                 <label class="radio"><input type="radio" name="salesDay" value="prev" ${s.salesDay !== 'same' ? 'checked' : ''}><span><b>前一天</b><small>今天記的 CF Bal − 昨天的 ＋ 出貨 = 昨天賺的</small></span></label>
                 <label class="radio"><input type="radio" name="salesDay" value="same" ${s.salesDay === 'same' ? 'checked' : ''}><span><b>記錄當天</b><small>適合晚上收工才記 CF Bal</small></span></label>
@@ -2158,7 +2158,7 @@
           <div class="action-list">
             <div class="action-item"><div><b>下載完整備份</b><small>JSON 檔，包含帳號、記錄與設定，可完整還原。</small></div><button type="button" class="btn btn-primary btn-sm" data-action="backup">${icon('download')}下載</button></div>
             <div class="action-item"><div><b>從備份還原</b><small>會以備份檔取代目前所有資料（還原前會先暫存目前資料）。</small></div><button type="button" class="btn btn-sm" id="restoreBtn">${icon('upload')}選擇檔案</button></div>
-            <div class="action-item"><div><b>匯出記錄 CSV</b><small>可用 Excel / Google 試算表開啟，含 CF Bal、出貨、Stock 變化和 Sales。</small></div><button type="button" class="btn btn-sm" id="exportCsvBtn">${icon('download')}匯出</button></div>
+            <div class="action-item"><div><b>匯出記錄 CSV</b><small>可用 Excel / Google 試算表開啟，含 CF Bal、出貨、Stock 變化和 Stock Acquired。</small></div><button type="button" class="btn btn-sm" id="exportCsvBtn">${icon('download')}匯出</button></div>
             <div class="action-item"><div><b>匯入記錄 CSV</b><small>匯入前會檢查欄位、格式與重複資料，確認後才寫入。</small></div><div class="btn-pair"><button type="button" class="btn btn-ghost btn-sm" id="templateBtn">範本</button><button type="button" class="btn btn-sm" data-action="import-csv">${icon('upload')}匯入</button></div></div>
           </div>
         </section>
@@ -2176,12 +2176,12 @@
           <header class="card-head"><div><h3>計算規則</h3><p class="card-sub">所有數字都依下列方式計算</p></div></header>
           <dl class="rules">
             <dt>Stock</dt><dd>CF Bal，也就是帳號裡現在有多少。總 Stock = 各帳號最近一次 CF Bal 的加總。</dd>
-            <dt>出貨</dt><dd>上次記錄後出了多少貨。出貨會讓 Stock 變少，但<b>不會扣 Sales</b>。</dd>
+            <dt>出貨</dt><dd>上次記錄後出了多少貨。出貨會讓 Stock 變少，但<b>不會扣 Stock Acquired</b>。</dd>
             <dt>Stock 變化</dt><dd>這次 CF Bal − 上次 CF Bal。帳號的第一筆記錄沒有 Stock 變化。</dd>
-            <dt>Sales</dt><dd>Stock 變化 ＋ 出貨，也就是真正賺到的。${s.salesDay === 'same' ? '算在記錄當天。' : '算在記錄日的<b>前一天</b>：今天記的 = 昨天賺的。'}</dd>
-            <dt>跨 N 天</dt><dd>和上次記錄相隔多天時，Sales 是這幾天的合計；不會平均分攤，也不會把沒記錄的日子當成 0。</dd>
-            <dt>Sales 負數</dt><dd>CF Bal 少掉的比出貨還多，通常是出貨忘了填或 CF Bal 打錯，會標示讓你檢查。</dd>
-            <dt>每日平均</dt><dd>期間 Sales ÷ 涵蓋天數，適合比較記錄天數不同的帳號。</dd>
+            <dt>Stock Acquired</dt><dd>Stock 變化 ＋ 出貨，也就是真正賺到的。${s.salesDay === 'same' ? '算在記錄當天。' : '算在記錄日的<b>前一天</b>：今天記的 = 昨天賺的。'}</dd>
+            <dt>跨 N 天</dt><dd>和上次記錄相隔多天時，Stock Acquired 是這幾天的合計；不會平均分攤，也不會把沒記錄的日子當成 0。</dd>
+            <dt>Stock Acquired 負數</dt><dd>CF Bal 少掉的比出貨還多，通常是出貨忘了填或 CF Bal 打錯，會標示讓你檢查。</dd>
+            <dt>每日平均</dt><dd>期間 Stock Acquired ÷ 涵蓋天數，適合比較記錄天數不同的帳號。</dd>
           </dl>
         </section>
       </div>`;
@@ -2196,7 +2196,7 @@
     $$('input[name="salesDay"]', view).forEach((inp) => inp.addEventListener('change', () => {
       safely(() => {
         Store.updateSettings({ salesDay: inp.value === 'same' ? 'same' : 'prev' });
-        toast(inp.value === 'same' ? 'Sales 改為算在記錄當天' : 'Sales 改為算在前一天');
+        toast(inp.value === 'same' ? 'Stock Acquired 改為算在記錄當天' : 'Stock Acquired 改為算在前一天');
       });
     }));
     $('#restoreBtn', view).addEventListener('click', restoreFlow);
@@ -2354,7 +2354,7 @@
     if (!list.length) return '';
     const names = new Map(Store.state.accounts.map((a) => [a.id, a.name]));
     return `<div class="notice notice-reject">${icon('reject')}<div><b>管理員退回了 ${list.length} 筆出貨</b>
-        <p>這些出貨已經撤回，不再算進 Sales、出貨合計和結算。記錯了的話請重新記一筆正確的。</p>
+        <p>這些出貨已經撤回，不再算進 Stock Acquired、出貨合計和結算。記錯了的話請重新記一筆正確的。</p>
         <ul>${list.slice(0, 6).map((s) => `<li>${fmtDate(s.date)} · ${esc(names.get(s.accountId) || '')} · <b>${fmt(s.amount)}</b> — ${esc(s.rejected.reason)}${s.rejected.note ? `（${esc(s.rejected.note)}）` : ''}</li>`).join('')}</ul></div>
       <button type="button" class="btn btn-sm" data-action="rejects-seen">知道了</button></div>`;
   }
@@ -2594,7 +2594,7 @@
       const email = b.dataset.email;
       const r = Team.rows(email, Team.sourceFor(email)).find((x) => x.id === b.dataset.unreject);
       if (!r) return;
-      const ok = await confirmDialog({ title: '復原出貨', message: `把 ${fmtDate(r.date)} 的出貨 <b>${fmt(r.amount)}</b> 復原？<br>復原後會重新算進他的 Sales，也要再定價一次。`, confirmText: '復原' });
+      const ok = await confirmDialog({ title: '復原出貨', message: `把 ${fmtDate(r.date)} 的出貨 <b>${fmt(r.amount)}</b> 復原？<br>復原後會重新算進他的 Stock Acquired，也要再定價一次。`, confirmText: '復原' });
       if (!ok) return;
       try { await Team.unrejectShipment(email, r.id); toast('已復原，他下次打開 App 就會更新'); } catch (err) { toast(err.message, 'error'); }
     }));
@@ -2678,7 +2678,7 @@
           <div class="reason-chips">${Team.REJECT_REASONS.map((t, k) => `<label class="reason-chip"><input type="radio" name="reason" value="${esc(t)}" ${k === 0 ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}</div>
           <span class="field-error"></span></div>
         <div class="field"><label for="rj-note">說明給他看</label><input id="rj-note" name="note" class="input" maxlength="200" placeholder="選填，例如 10/28 已經記過一次"><span class="field-error"></span></div>
-        <p class="help">${icon('info')}<span>退回後這筆<b>不算錢</b>${r.price != null ? `（原本 ${fmtRM(r.money)}，會取消定價）` : ''}。${esc(Team.nameOf(email))} 下次打開 App 時，這筆會自動撤回：他的 Sales 和出貨合計扣掉 <b>${fmt(r.amount)}</b>，並看到你選的理由。</span></p>
+        <p class="help">${icon('info')}<span>退回後這筆<b>不算錢</b>${r.price != null ? `（原本 ${fmtRM(r.money)}，會取消定價）` : ''}。${esc(Team.nameOf(email))} 下次打開 App 時，這筆會自動撤回：他的 Stock Acquired 和出貨合計扣掉 <b>${fmt(r.amount)}</b>，並看到你選的理由。</span></p>
       </form>`,
       footer: `<span class="grow"></span><button type="button" class="btn" data-close>取消</button><button type="button" class="btn btn-danger" data-ok>${icon('reject')}退回</button>`,
     });
@@ -2938,7 +2938,7 @@
   if (Team) Team.onChange(() => {
     if (Team.justRejected) {
       const n = Team.justRejected.length; Team.justRejected = null;
-      toast(`管理員退回了 ${n} 筆出貨，已從你的 Sales 撤回`, 'info');
+      toast(`管理員退回了 ${n} 筆出貨，已從你的 Stock Acquired 撤回`, 'info');
     }
     // 有新的審批通知：跳提示
     if (Team.enabled && !Store.readOnly) {

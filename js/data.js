@@ -742,7 +742,8 @@
 
   /* ---------- CSV ---------- */
   const CSV_COLUMNS = ['date', 'account', 'game_id', 'cf_bal', 'shipped', 'note'];
-  const CSV_COMPUTED = ['shipped_total', 'stock_change', 'sales', 'sales_date', 'from_sales', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
+  // 舊版匯出的 sales／sales_date 欄位名稱也照樣忽略
+  const CSV_COMPUTED = ['shipped_total', 'stock_change', 'stock_acquired', 'acquired_date', 'sales', 'sales_date', 'from_sales', 'net_change', 'recorded_profit', 'difference', 'gained', 'spent'];
   const ALIASES = {
     date: ['date', '日期'],
     account: ['account', 'account_name', 'name', '帳號', '帳號名稱', '账号'],
@@ -795,7 +796,7 @@
     exportRecords(records) {
       const d = Store.derived();
       // shipped = 記錄上直接填的出貨（匯入時會讀回）；shipped_total = 含出貨記錄的合計（只供參考，匯入時忽略）
-      const rows = [CSV_COLUMNS.concat(['shipped_total', 'stock_change', 'sales', 'sales_date', 'from_sales'])];
+      const rows = [CSV_COLUMNS.concat(['shipped_total', 'stock_change', 'stock_acquired', 'acquired_date', 'from_sales'])];
       records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach((r) => {
         const a = Store.account(r.accountId);
         const x = d.byId.get(r.id) || {};
