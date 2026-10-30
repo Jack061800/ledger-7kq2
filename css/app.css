@@ -926,6 +926,58 @@ input[type="date"].input { font-variant-numeric: tabular-nums; }
 .reason-chip span { display: inline-block; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; font-weight: 600; transition: background .2s, border-color .2s, color .2s; }
 .reason-chip input:checked + span { background: color-mix(in srgb, var(--neg) 14%, var(--surface)); border-color: color-mix(in srgb, var(--neg) 55%, transparent); color: var(--neg); }
 .reason-chip input:focus-visible + span { outline: 2px solid var(--neg); outline-offset: 2px; }
+/* 通知 */
+.notif-btn.has-new .icon { animation: bell-ring 2.4s var(--ease) infinite; transform-origin: 50% 10%; }
+@keyframes bell-ring { 0%, 70%, 100% { transform: rotate(0); } 75% { transform: rotate(14deg); } 82% { transform: rotate(-12deg); } 89% { transform: rotate(6deg); } }
+.notice-todo { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 40%, transparent); margin-bottom: 14px; }
+.notice-todo > .icon { color: var(--warn); }
+.notice-todo p { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.notif-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.notif-list li { padding: 10px 12px; border-radius: 14px; background: var(--surface-2); border: 1px solid transparent; }
+.notif-list li.is-unread { border-color: color-mix(in srgb, var(--info) 40%, transparent); background: color-mix(in srgb, var(--info) 6%, var(--surface-2)); }
+.notif-list li.is-action { border-color: color-mix(in srgb, var(--warn) 50%, transparent); background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); }
+.notif-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.notif-top b { font-size: 14px; }
+.notif-detail { margin: 4px 0 6px; font-size: 13px; color: var(--ink-2); word-break: break-word; }
+.notif-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.notif-meta .grow { flex: 1; }
+
+/* 結算調整 */
+.tag-info { background: color-mix(in srgb, var(--info) 14%, transparent); color: var(--info); font-size: 11px; vertical-align: middle; margin-left: 6px; }
+.adj-card h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.adj-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.adj-list li { padding: 12px 14px; border-radius: 14px; background: var(--surface-2); border: 1px solid transparent; }
+.adj-list li.adj-pending { border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--surface-2)); }
+.adj-list li.adj-rejected, .adj-list li.adj-cancelled { opacity: .78; }
+.adj-list li.adj-rejected .adj-amt, .adj-list li.adj-cancelled .adj-amt { text-decoration: line-through; }
+.adj-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.adj-amt { font-size: 18px; font-variant-numeric: tabular-nums; }
+.adj-flag { font-size: 12px; }
+.adj-reason { margin: 6px 0; font-size: 14px; }
+.adj-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 4px 16px; margin: 0; font-size: 12px; }
+.adj-meta div { display: flex; gap: 6px; min-width: 0; }
+.adj-meta dt { color: var(--muted); flex: none; }
+.adj-meta dd { margin: 0; min-width: 0; }
+.adj-meta small { display: block; }
+.adj-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.adj-dir { margin-bottom: 12px; display: flex; }
+.adj-dir .seg-btn { flex: 1; }
+
+/* 出售報告 */
+.buyer-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.buyer-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 14px; align-items: center; padding: 9px 12px; border-radius: 12px; background: var(--surface-2); font-size: 13px; }
+.buyer-list li span:first-of-type { color: var(--muted); }
+.buyer-list .num { font-variant-numeric: tabular-nums; text-align: right; font-weight: 650; min-width: 84px; }
+.sl-table td { vertical-align: middle; }
+.sl-table .sl-sub { display: block; font-size: 11px; }
+.sl-table tr.is-rejected .sl-qty { text-decoration: line-through; color: var(--muted); }
+.sl-table .swatch { margin-right: 6px; }
+
+/* CF 出售所得 */
+.field-sale label { display: flex; align-items: center; gap: 6px; }
+.field-sale label .tag { font-size: 10.5px; }
+.cf-sold { display: block; font-size: 11px; color: var(--gold); font-weight: 600; }
+
 .notice-reject { background: color-mix(in srgb, var(--neg) 9%, var(--surface)); border-color: color-mix(in srgb, var(--neg) 30%, transparent); margin-bottom: 14px; align-items: flex-start; }
 .notice-reject > .icon { color: var(--neg); margin-top: 2px; }
 .notice-reject ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
