@@ -686,16 +686,17 @@
      *   shipped  期間內出貨總和
      *   covered  這些 Sales 涵蓋的天數（各記錄 gap 的總和）
      *   avg      每日平均 Sales = sales ÷ covered
+     *   sold     其中標示「出售東西所得」的部分（只算有 Sales 的記錄，和 avg 用同一段天數）
      *   negatives Sales 為負數的筆數（可能漏記出貨）
      */
     windowStats(accountId, start, end) {
       const d = Store.derived();
-      let sales = 0; let salesCount = 0; let covered = 0; let shipped = 0; let shippedCount = 0; let negatives = 0; let days = 0;
+      let sales = 0; let salesCount = 0; let covered = 0; let shipped = 0; let shippedCount = 0; let negatives = 0; let days = 0; let sold = 0;
       this.list(accountId).forEach((r) => {
         const x = d.byId.get(r.id);
         if (x.salesDate < start || x.salesDate > end) return;
         days++;
-        if (x.sales != null) { sales += x.sales; salesCount++; covered += x.gap; }
+        if (x.sales != null) { sales += x.sales; salesCount++; covered += x.gap; sold += r.fromSales || 0; }
         if (x.shipped) { shipped += x.shipped; shippedCount++; }
         if (x.negative) negatives++;
       });
@@ -703,6 +704,8 @@
         days, salesCount, covered, shippedCount, negatives, shipped,
         sales: salesCount ? sales : null,
         avg: covered ? sales / covered : null,
+        sold: salesCount ? sold : null,
+        avgSold: covered ? sold / covered : null,
       };
     },
 

@@ -224,7 +224,7 @@
 
   /* ================= 導覽與版面 ================= */
   const NAV = [
-    { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Stock 庫存和 Sales 賺到的，一眼看完' },
+    { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Stock 庫存和 Stock Acquired（打 Mob／賣貨），一眼看完' },
     { id: 'analytics', label: 'Stock 購入報告', short: '購入', icon: 'analytics', sub: 'Stock Acquisitions Report：每天新增多少 Stock（CF Bal 變化 ＋ 賣出去的），各帳號比較' },
     { id: 'sales', label: 'Stock 出售報告', short: '出售', icon: 'ship', sub: 'Stock Sales Report：你把 Stock 賣給誰、賣了多少、多少錢、交易狀態' },
     { id: 'entry', label: '每日錄入', short: '錄入', icon: 'entry', sub: '每天填各帳號的 CF Bal 和出貨' },
@@ -440,7 +440,7 @@
       ${Team && Team.enabled && !Store.readOnly ? (() => { const n = Team.notifBadge(); return `<button type="button" class="round-btn notif-btn ${n ? 'has-new' : ''}" data-action="notifications" title="通知${n ? `（${n} 則待處理／未讀）` : ''}" aria-label="通知${n ? `，${n} 則待處理或未讀` : ''}">${icon('bell')}${n ? `<span class="dot-badge">${n > 99 ? '99+' : n}</span>` : ''}</button>`; })() : ''}
       <button type="button" class="round-btn" data-action="backup" title="${bk.stale ? (bk.days == null ? '還沒有備份過，建議下載備份' : `已 ${bk.days} 天沒有備份`) : '下載備份'}" aria-label="下載備份">${icon('download')}${bk.stale ? '<span class="dot-badge is-dot"></span>' : ''}</button>
       <button type="button" class="btn btn-primary" data-action="new-record">${icon('plus')}<span class="btn-label">新增記錄</span></button>
-      <div class="me" title="今天記錄的 CF Bal 算出的 Sales（庫存變化 + 出貨）"><span class="me-avatar">${esc(Array.from(Store.state.settings.currencyName || '幣')[0])}</span><span><small>${greet}</small><b>${salesDayLabel()} Sales ${done ? fmtSigned(todaySales) : '—'}</b></span></div>`;
+      <div class="me" title="今天記錄的 CF Bal 算出的 Stock Acquired（庫存變化 + 出貨）"><span class="me-avatar">${esc(Array.from(Store.state.settings.currencyName || '幣')[0])}</span><span><small>${greet}</small><b>${salesDayLabel()} Acquired ${done ? fmtSigned(todaySales) : '—'}</b></span></div>`;
 
     $('#themeSwitch').innerHTML = `
       <button type="button" class="theme-sw-btn ${theme === 'light' ? 'active' : ''}" data-theme-set="light" data-label="淺色模式" aria-label="淺色模式" aria-pressed="${theme === 'light'}">${icon('sun')}<span class="nav-label">淺色</span></button>
@@ -588,15 +588,28 @@
   }
 
   // 多帳號合計（依 Sales 歸屬日）；avg 是各帳號每日平均 Sales 的加總（= 所選帳號合計每天大約賺多少）
+  //   sold／avgSold 是其中「賣貨所得」，mob／avgMob = 其餘（打 Mob 得到的）
   function sumWindow(ids, start, end) {
     let sales = 0; let has = false; let avg = 0; let hasAvg = false; let count = 0; let shipped = 0; let negatives = 0;
+    let sold = 0; let avgSold = 0;
     ids.forEach((id) => {
       const st = Calc.windowStats(id, start, end);
-      if (st.sales != null) { sales += st.sales; has = true; count += st.salesCount; }
-      if (st.avg != null) { avg += st.avg; hasAvg = true; }
+      if (st.sales != null) { sales += st.sales; has = true; count += st.salesCount; sold += st.sold; }
+      if (st.avg != null) { avg += st.avg; hasAvg = true; avgSold += st.avgSold; }
       shipped += st.shipped; negatives += st.negatives;
     });
-    return { sales: has ? sales : null, avg: hasAvg ? avg : null, count, shipped, negatives };
+    return {
+      sales: has ? sales : null, avg: hasAvg ? avg : null, count, shipped, negatives,
+      sold: has ? sold : null, mob: has ? sales - sold : null,
+      avgSold: hasAvg ? avgSold : null, avgMob: hasAvg ? avg - avgSold : null,
+    };
+  }
+
+  // Stock Acquired 卡片下方的來源拆分：打 Mob／賣貨，各自的合計和日均
+  function acquiredSplit(w, { daily = true } = {}) {
+    if (w.sales == null) return '';
+    const row = (cls, label, total, avg) => `<div class="kpi-src ${cls}"><span class="src-dot"></span><span class="src-label">${label}</span><b class="${deltaClass(total)}">${fmtSigned(total)}</b>${daily ? `<small>日均 ${avg == null ? '—' : fmtSigned(avg)}</small>` : ''}</div>`;
+    return `<div class="kpi-split">${row('src-mob', '打 Mob', w.mob, w.avgMob)}${row('src-sold', '賣貨', w.sold, w.avgSold)}</div>`;
   }
 
   // Sales 圖表用的日期範圍：預設模式下最新的 Sales 是昨天，所以「最近 N 天」往前挪一天
@@ -703,22 +716,25 @@
           extra: `<div class="kpi-spark">${Charts.sparkline(spark30, 'var(--primary)', 240, 34, true)}</div>`,
         }),
         kpiCard({
-          ic: 'calendar', tone: 'blue', label: `${salesDayLabel()} Sales（${fmtDate(lastSalesDay).slice(5)}）`,
+          ic: 'calendar', tone: 'blue', label: `${salesDayLabel()} Stock Acquired（${fmtDate(lastSalesDay).slice(5)}）`,
           value: salesValue(dayW, 'k-day'),
           sub: recordedToday ? `${recordedToday} / ${ids.length} 個帳號已記今天的 CF Bal · 出貨 ${fmt(dayW.shipped)}` : '今天還沒記 CF Bal · <a href="#/entry">前往錄入</a>',
-          tip: `Sales = 今天 CF Bal − 上次 CF Bal ＋ 出貨，算在${salesPrev() ? '前一天' : '當天'}。出貨不會讓 Sales 變少；還沒記錄的帳號不計入。`,
+          tip: `Stock Acquired = 今天 CF Bal − 上次 CF Bal ＋ 出貨，算在${salesPrev() ? '前一天' : '當天'}。賣貨 = 記 CF Bal 時填的「其中出售東西所得」，其餘算打 Mob。出貨不會讓它變少；還沒記錄的帳號不計入。`,
+          extra: acquiredSplit(dayW, { daily: false }),
         }),
         kpiCard({
-          ic: 'week', tone: 'green', label: '近 7 日 Sales',
+          ic: 'week', tone: 'green', label: '近 7 日 Stock Acquired',
           value: salesValue(w7, 'k-w7'),
           sub: subText(w7),
-          tip: '最近 7 天每天 Sales 的總和（Sales = CF Bal 變化 ＋ 出貨）。合計日均 = 各帳號（Sales ÷ 涵蓋天數）的加總。',
+          tip: '最近 7 天每天 Stock Acquired 的總和（= CF Bal 變化 ＋ 出貨），分成打 Mob 和賣貨。日均 = 各帳號（金額 ÷ 涵蓋天數）的加總。',
+          extra: acquiredSplit(w7),
         }),
         kpiCard({
-          ic: 'trend', tone: 'violet', label: '近 30 日 Sales',
+          ic: 'trend', tone: 'violet', label: '近 30 日 Stock Acquired',
           value: salesValue(w30, 'k-w30'),
           sub: subText(w30),
-          tip: '最近 30 天每天 Sales 的總和，計算方式同近 7 日。',
+          tip: '最近 30 天每天 Stock Acquired 的總和，計算方式同近 7 日。',
+          extra: acquiredSplit(w30),
         }),
       ].join('');
 
