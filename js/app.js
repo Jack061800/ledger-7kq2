@@ -430,7 +430,7 @@
       ? `<select class="input input-sm game-select" data-game-select aria-label="切換遊戲">${games.map((g) => `<option value="${g.id}" ${g.id === game.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`
       : `<div class="seg seg-sm game-seg" role="group" aria-label="切換遊戲">${games.map((g) => `<button type="button" class="seg-btn ${g.id === game.id ? 'active' : ''}" data-game="${g.id}" aria-pressed="${g.id === game.id}" title="${esc(g.desc || g.name)}">${esc(g.short || g.name)}</button>`).join('')}</div>`;
     $('.brand').setAttribute('href', game.home);
-    document.documentElement.dataset.game = game.id;
+    document.documentElement.dataset.activeGame = game.id;
   }
   // 切換時記住各遊戲最後看的頁面，切回來直接回到那裡
   function switchGame(id) {
@@ -3657,7 +3657,7 @@
   document.addEventListener('click', (e) => {
     const th = e.target.closest('[data-theme-set]');
     if (th) { setTheme(th.dataset.themeSet, e); return; }
-    const gm = e.target.closest('[data-game]');
+    const gm = e.target.closest('button[data-game]');
     if (gm) { switchGame(gm.dataset.game); return; }
     const t = e.target.closest('[data-action], [data-edit-record], [data-edit-account]');
     if (!t) return;
