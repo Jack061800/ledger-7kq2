@@ -1,6 +1,6 @@
 /* 離線快取：App 本身的檔案先存起來，沒有網路也能開啟
  * 更新程式時把 VERSION 改掉，手機下次連上網就會換成新版 */
-const VERSION = 'v13';
+const VERSION = 'v15';
 const APP_CACHE = `gct-app-${VERSION}`;
 const FONT_CACHE = 'gct-fonts';
 const APP_FILES = [
@@ -14,7 +14,12 @@ const APP_FILES = [
   './js/sync.js',
   './js/team.js',
   './js/charts.js',
+  './js/games.js',
+  './js/mm-data.js',
+  './js/mm-drive.js',
+  './js/mm-sync.js',
   './js/app.js',
+  './js/mm-app.js',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
