@@ -61,7 +61,7 @@
 
   /* 折線／面積圖
    * opts: { labels, series: [{ name, color, values, dashed, area }], height, includeZero, dots, smooth,
-   *         tooltip(i) => html, emptyText, ariaLabel, labelFormat(label) }
+   *         tooltip(i) => html, emptyText, ariaLabel, labelFormat(label), axisFormat(v), onPick(i) }
    * values 中的 null 代表沒有資料：線段會斷開，不會被畫成 0
    */
   function lineChart(container, opts) {
@@ -197,10 +197,15 @@
     tip.hidden = true;
     root.append(tip);
 
-    const show = (evt) => {
+    const pick = (evt) => {
       const rect = svg.getBoundingClientRect();
       const px = evt.clientX - rect.left;
-      const i = n === 1 ? 0 : Math.max(0, Math.min(n - 1, Math.round(((px - m.l) / iw) * (n - 1))));
+      return n === 1 ? 0 : Math.max(0, Math.min(n - 1, Math.round(((px - m.l) / iw) * (n - 1))));
+    };
+    // o.onPick(i)：點圖上某一天（例如打開那天的明細）
+    if (o.onPick) { hit.style.cursor = 'pointer'; hit.addEventListener('click', (evt) => o.onPick(pick(evt))); }
+    const show = (evt) => {
+      const i = pick(evt);
       guide.setAttribute('x1', x(i)); guide.setAttribute('x2', x(i));
       guide.setAttribute('visibility', 'visible');
       hoverDots.innerHTML = '';

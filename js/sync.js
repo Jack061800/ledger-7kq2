@@ -36,6 +36,8 @@
     const bucket = (y) => { if (!years.has(y)) years.set(y, { records: [], shipments: [] }); return years.get(y); };
     state.records.forEach((r) => bucket(r.date.slice(0, 4)).records.push(r));
     (state.shipments || []).forEach((x) => bucket(x.date.slice(0, 4)).shipments.push(x));
+    // 打卡（開始刷 CF 的時間）也分年存；沒有打卡的年份不放這個欄位，舊資料的內容維持不變
+    (state.checkins || []).forEach((c) => { const b = bucket(c.date.slice(0, 4)); (b.checkins = b.checkins || []).push(c); });
     const parts = new Map();
     years.forEach((v, y) => parts.set(y, JSON.stringify(v)));
     return { main, parts };
@@ -47,17 +49,18 @@
     if (!main) return null;
     const parts = await Cloud.list(`${ledgerPath(email)}/parts`);
     const m = JSON.parse(main.data.main || '{}');
-    const records = []; const shipments = [];
+    const records = []; const shipments = []; const checkins = [];
     parts.forEach((p) => {
       const x = JSON.parse(p.data.data || '{}');
       records.push(...(x.records || []));
       shipments.push(...(x.shipments || []));
+      checkins.push(...(x.checkins || []));
     });
-    return { state: normalizeState({ ...m, records, shipments }), main, parts };
+    return { state: normalizeState({ ...m, records, shipments, checkins }), main, parts };
   }
 
   // 只比較資料本身（不含每台裝置自己的備份時間）
-  const fingerprint = (s) => JSON.stringify({ a: s.accounts, r: s.records, h: s.shipments || [], d: s.deleted, s: { ...s.settings, lastBackupAt: null } });
+  const fingerprint = (s) => JSON.stringify({ a: s.accounts, r: s.records, h: s.shipments || [], c: s.checkins || [], d: s.deleted, s: { ...s.settings, lastBackupAt: null } });
 
   let running = false; let again = false; let timer = null;
 

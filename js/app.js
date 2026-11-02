@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { Store, Calc, CSV, D, PALETTE, parseAmount, buildDemoState, normalizeState } = window.GCT;
+  const { Store, Calc, CSV, Monitor, D, PALETTE, parseAmount, buildDemoState, normalizeState } = window.GCT;
   const Charts = window.GCTCharts;
   const Team = window.GCTTeam;
   // 主要趨勢線：藍色漸層（總庫存、總 Sales）
@@ -69,6 +69,7 @@
     coin: '<ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V6.5"/><path d="M5 12v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V12"/>',
     trend: '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
     calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
     week: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M7 14h4M7 17h7"/>',
     list: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/>',
@@ -109,7 +110,9 @@
     acctFilter: 'all', acctSort: 'manual', acctView: 'grid', recSort: 'date', recDir: 'desc', lastAccountId: '',
     theme: null, railOpen: false,
     anRange: '30', anMetric: 'sales', anAccount: 'all', anBucket: 'day', anCompare: true,
-  }, (() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (_) { return {}; } })());
+    monRange: '7', monStart: '', monEnd: '', monAccounts: null,
+    gameRoute: {}, mmRange: '30', mmStart: '', mmEnd: '', mmAccounts: null,
+  },(() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (_) { return {}; } })());
   const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch (_) { /* ignore */ } };
 
   /* ================= 提示、對話框 ================= */
@@ -228,6 +231,7 @@
     { id: 'analytics', label: 'Stock 購入報告', short: '購入', icon: 'analytics', sub: 'Stock Acquisitions Report：每天新增多少 Stock（CF Bal 變化 ＋ 賣出去的），各帳號比較' },
     { id: 'sales', label: 'Stock 出售報告', short: '出售', icon: 'ship', sub: 'Stock Sales Report：你把 Stock 賣給誰、賣了多少、多少錢、交易狀態' },
     { id: 'entry', label: '每日錄入', short: '錄入', icon: 'entry', sub: '每天填各帳號的 CF Bal 和出貨' },
+    { id: 'monitor', label: '準時監控', short: '準時', icon: 'clock', sub: '每個帳號早上／下午／晚上有沒有準時開始刷 CF，誰常延遲或漏刷' },
     { id: 'records', label: '記錄', icon: 'records', sub: '搜尋、排序、編輯每一筆每日記錄' },
     { id: 'accounts', label: '帳號', icon: 'accounts', sub: '新增、編輯、停用你的遊戲帳號' },
     { id: 'settle', label: '結算', icon: 'settle', sub: '出貨定價、付款和欠款餘額（RM）' },
@@ -414,8 +418,78 @@
     return { last, days, stale: Store.state.records.length > 0 && (days == null || days >= 7) };
   };
 
+  /* ---------- 遊戲切換（M Sea／Maple M／之後的遊戲）：每個遊戲的資料和頁面各自獨立 ---------- */
+  const Games = window.GCTGames;
+  const currentGame = () => Games.fromHash(location.hash);
+  function renderGameSwitch(game) {
+    const games = Games.list();
+    const host = $('#gameSwitch');
+    if (!host) return;
+    // 遊戲多了放不下時改成下拉選單
+    host.innerHTML = games.length > 3
+      ? `<select class="input input-sm game-select" data-game-select aria-label="切換遊戲">${games.map((g) => `<option value="${g.id}" ${g.id === game.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`
+      : `<div class="seg seg-sm game-seg" role="group" aria-label="切換遊戲">${games.map((g) => `<button type="button" class="seg-btn ${g.id === game.id ? 'active' : ''}" data-game="${g.id}" aria-pressed="${g.id === game.id}" title="${esc(g.desc || g.name)}">${esc(g.short || g.name)}</button>`).join('')}</div>`;
+    $('.brand').setAttribute('href', game.home);
+    document.documentElement.dataset.game = game.id;
+  }
+  // 切換時記住各遊戲最後看的頁面，切回來直接回到那裡
+  function switchGame(id) {
+    const from = currentGame();
+    const to = Games.get(id);
+    if (!to || from.id === id) return;
+    ui.gameRoute = { ...(ui.gameRoute || {}), [from.id]: location.hash || from.home };
+    saveUI();
+    location.hash = ui.gameRoute[id] || to.home;
+  }
+  function renderRailCommon() {
+    const theme = currentTheme();
+    $('#themeSwitch').innerHTML = `
+      <button type="button" class="theme-sw-btn ${theme === 'light' ? 'active' : ''}" data-theme-set="light" data-label="淺色模式" aria-label="淺色模式" aria-pressed="${theme === 'light'}">${icon('sun')}<span class="nav-label">淺色</span></button>
+      <button type="button" class="theme-sw-btn ${theme === 'dark' ? 'active' : ''}" data-theme-set="dark" data-label="深色模式" aria-label="深色模式" aria-pressed="${theme === 'dark'}">${icon('moon')}<span class="nav-label">深色</span></button>`;
+    $('#railFoot').innerHTML = `<button type="button" class="rail-btn" data-action="toggle-rail" data-label="${ui.railOpen ? '收合選單' : '展開選單'}" aria-label="${ui.railOpen ? '收合選單' : '展開選單'}">${icon('sidebar')}<span class="nav-label">收合選單</span></button>`;
+  }
+  // 其他遊戲的頂部列和選單（內容由遊戲模組提供）
+  function renderGameChrome(game) {
+    const { page } = game.route(location.hash);
+    const c = game.chrome();
+    $('#topCenter').innerHTML = c.center;
+    $('#topActions').innerHTML = c.actions;
+    renderRailCommon();
+    renderGameSwitch(game);
+    const item = (n, cls) => {
+      const badge = game.badge ? game.badge(n.id) : 0;
+      return `<a href="#/${game.prefix}/${n.id}" class="${cls} ${n.id === page ? 'active' : ''}" ${n.id === page ? 'aria-current="page"' : ''} ${cls === 'nav-item' ? `data-label="${n.label}"` : ''} aria-label="${n.label}">
+        ${icon(n.icon)}<span class="nav-label">${cls === 'tab' ? (n.short || n.label) : n.label}</span>${badge ? `<span class="nav-badge">${badge}</span>` : ''}</a>`;
+    };
+    $('#nav').innerHTML = game.nav.map((n) => item(n, 'nav-item')).join('');
+    $('#tabbar').innerHTML = game.nav.map((n) => item(n, 'tab')).join('');
+  }
+  function renderGame(game, enter) {
+    Charts.cleanup();
+    const { page, params } = game.route(location.hash);
+    const nav = game.nav.find((n) => n.id === page);
+    document.title = `${nav.label} · ${game.name} · 貨幣帳本`;
+    renderGameChrome(game);
+    renderPageHead({ ...nav, id: `${game.id}:${nav.id}` }, enter);
+    $('#pageActions').innerHTML = '';
+    document.documentElement.classList.remove('is-readonly');
+    $('#globalBanner').innerHTML = game.banner ? game.banner() : '';
+    const view = $('#view');
+    try {
+      game.render(view, page, params);
+      enhance(view, { enter });
+      enhanceSegs($('#pageActions'));
+    } catch (e) {
+      console.error(e);
+      view.innerHTML = `<div class="card empty"><div class="empty-icon tone-neg">${icon('alert')}</div><h3>畫面載入失敗</h3><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">重新整理</button></div>`;
+    }
+  }
+
   // 頂部列、左側欄、手機底部列
   function renderChrome(active) {
+    const game = currentGame();
+    if (game.id !== 'msea') { renderGameChrome(game); return; }
+    renderGameSwitch(game);
     const today = D.todayISO();
     const activeAccts = Store.accounts().filter((a) => a.status === 'active');
     const done = activeAccts.filter((a) => Store.recordFor(a.id, today)).length;
@@ -448,10 +522,13 @@
 
     const toPrice = Team ? Team.pendingTotal() : 0;
     const timersDue = Store.readOnly ? 0 : Store.timerAlerts().filter((x) => x.state === 'overdue' || x.state === 'due').length;
+    // 已經開始、還沒記錄的時段（進行中）
+    const slotsOpen = Store.readOnly ? 0 : Monitor.cells(Store.accounts().map((a) => a.id), D.todayISO(), D.todayISO()).filter((c) => c.status === 'open').length;
     const item = (n, cls) => `<a href="#/${n.id}" class="${cls} ${n.id === active ? 'active' : ''}" ${n.id === active ? 'aria-current="page"' : ''} ${cls === 'nav-item' ? `data-label="${n.label}"` : ''} aria-label="${n.label}">
       ${icon(n.icon)}<span class="nav-label">${cls === 'tab' ? (n.short || n.label) : n.label}</span>
       ${n.id === 'entry' && pending ? `<span class="nav-badge" title="今天尚未記錄的帳號">${pending}</span>` : ''}
-      ${n.id === 'accounts' && timersDue ? `<span class="nav-badge" title="要續期 Mesos Drop Boost／可以領 Union Coin">${timersDue}</span>` : ''}
+      ${n.id === 'monitor' && slotsOpen ? `<span class="nav-badge" title="已經開始、還沒記錄的時段">${slotsOpen}</span>` : ''}
+      ${n.id === 'accounts' && timersDue ?`<span class="nav-badge" title="要續期 Maple Union Artifact／可以領 Union Coin／今天最後一天買 Mesos Booster">${timersDue}</span>` : ''}
       ${n.id === 'settle' && toPrice ? `<span class="nav-badge" title="待定價的出貨">${toPrice}</span>` : ''}</a>`;
     $('#nav').innerHTML = NAV.map((n) => item(n, 'nav-item')).join('');
     $('#tabbar').innerHTML = NAV.map((n) => item(n, 'tab')).join('');
@@ -472,6 +549,8 @@
   }
 
   function render(enter = false) {
+    const game = currentGame();
+    if (game.id !== 'msea') { renderGame(game, enter); return; }
     Charts.cleanup();
     const { name, params } = route();
     const nav = NAV.find((n) => n.id === name);
@@ -744,30 +823,118 @@
     return `<span class="avatar ${size}" style="--c:${color(a)}">${esc(initials(a.name))}</span>`;
   };
 
-  /* ================= 定時事項：Mesos Drop Boost（30 天）、Union Coin（3 天） ================= */
+  /* ================= 時段與開始時間（準時監控） ================= */
+  // 時間一律用本地時區、12 小時制顯示：9:05 AM
+  const fmtTime = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); };
+  const h12 = (h) => { const x = h % 24; return `${x % 12 || 12}:00 ${x < 12 ? 'AM' : 'PM'}`; };
+  const slotLabel = (id) => (Monitor.SLOT_BY[id] ? Monitor.SLOT_BY[id].label : '—');
+  const slotRange = (id) => { const s = Monitor.SLOT_BY[id]; return `${h12(s.start)}–${h12(s.end)}`; };
+  // 按鈕上用的短寫法：6AM–12PM
+  const slotRangeShort = (id) => slotRange(id).replace(/:00 /g, '');
+  // 延遲幾分鐘 → 「晚 1 小時 5 分」「提早 10 分」「準點」
+  const fmtDelay = (min) => {
+    if (min == null) return '—';
+    const a = Math.abs(min);
+    const s = a >= 60 ? `${Math.floor(a / 60)} 小時${a % 60 ? ` ${a % 60} 分` : ''}` : `${a} 分`;
+    return min < 0 ? `提早 ${s}` : min === 0 ? '準點' : `晚 ${s}`;
+  };
+  const fmtLate = (min) => fmtDelay(min).replace(/^晚 /, '');
+  // 刷 CF 時數：2 小時 19 分／45 分；短寫法 2時19分（放在小格子裡）
+  const fmtHours = (min) => { const m = Math.max(0, Math.round(min || 0)); const h = Math.floor(m / 60); return h ? `${h} 小時${m % 60 ? ` ${m % 60} 分` : ''}` : `${m} 分`; };
+  const fmtHoursShort = (min) => { const m = Math.max(0, Math.round(min || 0)); const h = Math.floor(m / 60); return h ? `${h}時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`; };
+  // 日期＋12 小時制時間：2026/11/1 3:41 PM
+  const fmtStamp = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '—' : `${fmtDate(D.toISO(d))} ${fmtTime(iso)}`; };
+  const MON_STATUS = {
+    ontime: { label: '準時', cls: 'ok' }, late: { label: '延遲', cls: 'warn' }, missed: { label: '未記錄', cls: 'bad' },
+    open: { label: '進行中', cls: 'info' }, upcoming: { label: '未開始', cls: 'muted' },
+  };
+  const monBadge = (c) => `<span class="mon-badge ms-${MON_STATUS[c.status].cls}">${MON_STATUS[c.status].label}</span>`;
+  function monNote(c) {
+    if (c.checkin) {
+      const extra = c.afterEnd ? '（時段結束後才記）' : '';
+      return `${fmtTime(c.checkin.startedAt)} 開始 · ${fmtDelay(c.delay)}${extra} · 刷 ${fmtHours(c.farm)} / ${fmtHours(c.full)}${c.live ? `（${h12(Monitor.SLOT_BY[c.slot].end)} 停）` : ''}`;
+    }
+    if (c.status === 'missed') return '時段結束都沒有記錄，可能漏刷（刷了 0 小時）';
+    if (c.status === 'open') return `已開始 ${fmtLate(c.delay)}，還沒記錄（現在開始最多還能刷 ${fmtHours(c.plan)}）`;
+    return `${h12(Monitor.SLOT_BY[c.slot].start)} 開始`;
+  }
+  const accSlots = (a) => Monitor.SLOTS.filter((s) => a && a.slots && a.slots[s.id]).map((s) => s.id);
+
+  // 記 CF Bal 時選「這次是哪個時段開始刷」；selected 是預設（Store.suggestSlot）
+  function slotPicker(name, accountId, date, selected) {
+    const mine = accSlots(Store.account(accountId));
+    const chips = Monitor.SLOTS.map((s) => {
+      const ck = Store.checkinFor(accountId, date, s.id);
+      return `<label class="slot-chip ${mine.includes(s.id) ? 'is-mine' : ''}"><input type="radio" name="${name}" value="${s.id}" ${selected === s.id ? 'checked' : ''}>
+        <span><b>${s.label}</b><small>${ck ? `${fmtTime(ck.startedAt)} 已開始` : slotRangeShort(s.id)}</small></span></label>`;
+    }).join('');
+    return `<fieldset class="slot-pick"><legend>${icon('clock', 'icon-sm')}開始刷 CF 的時段${mine.length ? '' : '<span class="muted">（這個帳號還沒設定時段）</span>'}</legend>
+      <div class="slot-chips">${chips}<label class="slot-chip slot-none"><input type="radio" name="${name}" value="" ${selected ? '' : 'checked'}><span><b>不記</b><small>只改數字</small></span></label></div>
+      <p class="field-hint slot-hint" data-slot-hint></p></fieldset>`;
+  }
+  // 儲存前預告：會記成幾點開始、算準時還是延遲；這格已經有開始時間就說明不會改
+  function slotHintText(accountId, date, slot, now = new Date()) {
+    if (!slot) return '這次不記開始時間（只更新 CF Bal）。';
+    const ck = Store.checkinFor(accountId, date, slot);
+    if (ck) return `${slotLabel(slot)}已在 ${fmtStamp(ck.startedAt)} 開始，這次儲存只更新 CF Bal，開始時間不變（最後修改時間會更新）。`;
+    const j = Monitor.judge(date, slot, { startedAt: now.toISOString() }, now);
+    return `會記為 ${fmtDate(date)} ${slotLabel(slot)}（${slotRange(slot)}）的開始時間：${fmtTime(now.toISOString())}，${MON_STATUS[j.status].label}${j.status === 'late' ? ` ${fmtLate(j.delay)}` : ''}${j.afterEnd ? '，已經過了時段結束，這個時段刷了 0 小時' : `，這個時段會刷 ${fmtHours(j.farm)}（${h12(Monitor.SLOT_BY[slot].end)} 停，共 ${fmtHours(j.full)}）`}。`;
+  }
+  const pickedSlot = (root, name) => { const b = root.querySelector(`[name="${name}"]:checked`); return b ? b.value : ''; };
+  function updateSlotHint(root, name, accountId, date) {
+    const el = root.querySelector('[data-slot-hint]');
+    if (el && accountId && date) el.textContent = slotHintText(accountId, date, pickedSlot(root, name));
+  }
+  // 儲存後的提示：「早上 9:05 AM 開始（準時）」
+  function checkinToast(res) {
+    if (!res || !res.checkin) return '';
+    const c = res.checkin.checkin;
+    if (res.checkin.mode === 'kept') return `，${slotLabel(c.slot)}開始時間維持 ${fmtTime(c.startedAt)}`;
+    const j = Monitor.judge(c.date, c.slot, c);
+    return `，${slotLabel(c.slot)} ${fmtTime(c.startedAt)} 開始，刷 ${fmtHours(j.farm)}（${MON_STATUS[j.status].label}${j.status === 'late' ? ' ' + fmtLate(j.delay) : ''}）`;
+  }
+  // 帳號卡片：今天三個時段的狀態
+  function slotStrip(a) {
+    if (!accSlots(a).length && !Monitor.SLOTS.some((s) => Store.checkinFor(a.id, D.todayISO(), s.id))) return '';
+    const today = D.todayISO();
+    const cells = Monitor.cells([a.id], today, today);
+    return `<a class="slot-strip" href="#/monitor" title="今天開始刷 CF 的情況">${cells.map((c) => `<span class="ss-cell ms-${MON_STATUS[c.status].cls}"><b>${slotLabel(c.slot)}</b><small>${c.checkin ? fmtTime(c.checkin.startedAt) : MON_STATUS[c.status].label}</small></span>`).join('')}</a>`;
+  }
+
+  /* ================= 定時事項：Maple Union Artifact（30 天）、Union Coin（3 天）、Mesos Booster（每週日前） ================= */
   const TIMER_KINDS = Object.keys(Store.TIMERS);
-  const TIMER_ICON = { boost: 'trend', union: 'coin' };
+  const TIMER_ICON = { boost: 'trend', union: 'coin', booster: 'tag' };
+  const WEEKDAY = (iso) => `週${WEEK[D.parseISO(iso).getDay()]}`;
   function timerText(st) {
+    if (st.weekly) {
+      if (st.bought) return `本週已買（下次 ${fmtDate(st.due).slice(5)} ${WEEKDAY(st.due)}前）`;
+      if (st.state === 'due') return '還沒買，今天是最後一天';
+      return `還沒買，${st.left} 天內（${fmtDate(st.due).slice(5)} ${WEEKDAY(st.due)}前）`;
+    }
     if (st.state === 'none') return '還沒記錄';
     if (st.state === 'overdue') return st.kind === 'union' ? `可以領了（過了 ${-st.left} 天）` : `已過期 ${-st.left} 天`;
     if (st.state === 'due') return st.kind === 'union' ? '今天可以領' : '今天到期';
     return st.kind === 'union' ? `${st.left} 天後可領` : `還有 ${st.left} 天（${fmtDate(st.due).slice(5)} 到期）`;
   }
-  const timerTone = (st) => ({ overdue: 'bad', due: 'bad', soon: 'warn', none: 'muted', ok: 'ok' }[st.state] || 'muted');
+  const timerTone = (st) => ({ overdue: 'bad', due: 'bad', soon: 'warn', none: 'muted', todo: 'muted', ok: 'ok' }[st.state] || 'muted');
+  // 每個事項的週期說明：每 30 天續期一次／每週日前買
+  const timerCycle = (def) => (def.weekly != null ? `每週${WEEK[def.weekly]}前${def.done === '購買' ? '買好' : def.done}` : `每 ${def.days} 天${def.done}一次`);
   // 帳號卡片上的一行：名稱、狀態、剩餘天數條、做完按鈕
   function timerRow(a, kind) {
     const st = Store.timerStatus(a, kind);
     if (!st || st.state === 'off') return '';
     const def = Store.TIMERS[kind];
-    const pct = st.state === 'none' ? 0 : Math.max(0, Math.min(100, (st.left / def.days) * 100));
+    // 每週的：買了是滿格；還沒買就看這週還剩幾天
+    const pct = st.weekly ? (st.bought ? 100 : ((st.left + 1) / 7) * 100) : st.state === 'none' ? 0 : Math.max(0, Math.min(100, (st.left / def.days) * 100));
     const btn = Store.readOnly ? '' : st.doneToday
       ? `<button type="button" class="btn btn-xs btn-ghost tm-done" data-timer-undo="${kind}" data-aid="${a.id}" title="今天已${def.done}，按一下取消">${icon('check', 'icon-xs')}今天</button>`
-      : `<button type="button" class="btn btn-xs" data-timer-done="${kind}" data-aid="${a.id}" title="記下今天已${def.done}">${kind === 'boost' ? '已續期' : '已領'}</button>`;
+      : st.weekly && st.bought ? ''
+      : `<button type="button" class="btn btn-xs" data-timer-done="${kind}" data-aid="${a.id}" title="記下今天已${def.done}">${def.btn}</button>`;
     return `<div class="timer-row tm-${timerTone(st)}">
       <span class="timer-ic">${icon(TIMER_ICON[kind], 'icon-sm')}</span>
       <div class="timer-main"><div class="timer-top"><b>${def.label}</b><span class="timer-state">${timerText(st)}</span></div>
         <div class="timer-bar"><span style="width:${pct}%"></span></div>
-        <small class="muted">${st.last ? `上次${def.done} ${fmtDate(st.last)} · 每 ${def.days} 天` : `每 ${def.days} 天${def.done}一次`}</small></div>
+        <small class="muted">${st.last ? `上次${def.done} ${fmtDate(st.last)} · ` : ''}${timerCycle(def)}</small></div>
       ${btn}</div>`;
   }
   function bindTimerButtons(root) {
@@ -776,7 +943,9 @@
       const a = Store.account(b.dataset.aid); const def = Store.TIMERS[kind];
       safely(() => {
         Store.markTimer(a.id, kind, D.todayISO(), on);
-        toast(on ? `${a.name}：${def.label} 今天已${def.done}，下次 ${fmtDate(D.addDays(D.todayISO(), def.days))}` : `已取消 ${a.name} 今天的 ${def.label} 記錄`);
+        const st = Store.timerStatus(Store.account(a.id), kind);
+        const next = st && st.due ? `，下次 ${fmtDate(st.due)}${def.weekly != null ? ` ${WEEKDAY(st.due)}前` : ''}` : '';
+        toast(on ? `${a.name}：${def.label} 今天已${def.done}${next}` : `已取消 ${a.name} 今天的 ${def.label} 記錄`);
       });
     }));
   }
@@ -787,11 +956,11 @@
     const none = Store.timerAlerts().filter((x) => x.state === 'none');
     if (!alerts.length && !none.length) return '';
     const line = (x) => `<li class="tmr-item tm-${timerTone(x)}">${avatar(x.account, 'xs')}<span class="tmr-text"><b>${esc(x.account.name)}</b> · ${Store.TIMERS[x.kind].label}<span class="timer-state">${timerText(x)}</span></span>
-      <button type="button" class="btn btn-xs" data-timer-done="${x.kind}" data-aid="${x.account.id}">${x.kind === 'boost' ? '已續期' : '已領'}</button></li>`;
+      <button type="button" class="btn btn-xs" data-timer-done="${x.kind}" data-aid="${x.account.id}">${Store.TIMERS[x.kind].btn}</button></li>`;
     const urgent = alerts.filter((x) => x.state !== 'soon').length;
     return `<div class="notice notice-timer ${urgent ? 'is-urgent' : ''}">${icon('bell')}<div class="grow"><b>${alerts.length ? `${alerts.length} 個角色事項要處理` : '還沒記錄續期／領取日期'}</b>
       ${alerts.length ? `<ul class="tmr-list">${alerts.map(line).join('')}</ul>` : ''}
-      ${none.length ? `<p class="muted">${none.length} 項還沒記錄過上次日期（${Array.from(new Set(none.map((x) => esc(x.account.name)))).slice(0, 4).join('、')}${none.length > 4 ? ' 等' : ''}）：做過後按「已續期／已領」，或在記 CF Bal 時勾選。</p>` : ''}</div>
+      ${none.length ? `<p class="muted">${none.length} 項還沒記錄過上次日期（${Array.from(new Set(none.map((x) => esc(x.account.name)))).slice(0, 4).join('、')}${none.length > 4 ? ' 等' : ''}）：做過後按「已續期／已領／已買」，或在記 CF Bal 時勾選。</p>` : ''}</div>
       <a class="btn btn-sm" href="#/accounts">${icon('accounts')}看全部角色</a></div>`;
   }
   // 記 CF Bal 時的勾選：date 這天有沒有做
@@ -802,7 +971,7 @@
       const on = ((a.timers || {})[k] || []).includes(date);
       const st = Store.timerStatus(a, k, date);
       return `<label class="timer-chk tm-${st ? timerTone(st) : 'muted'}"><input type="checkbox" name="${prefix}${k}" ${on ? 'checked' : ''}>
-        <span class="tc-box">${icon('check', 'icon-xs')}</span><span class="tc-text"><b>${k === 'boost' ? '今天續期了' : '今天領了'} ${def.label}</b><small>${st && st.state !== 'none' && st.last !== date ? timerText(st) : st && st.last === date ? '已記錄這天' : '還沒記錄過'}</small></span></label>`;
+        <span class="tc-box">${icon('check', 'icon-xs')}</span><span class="tc-text"><b>${def.check} ${def.label}</b><small>${st && st.last === date ? '已記錄這天' : st && (st.weekly || st.state !== 'none') ? timerText(st) : '還沒記錄過'}</small></span></label>`;
     }).join('');
   }
   const swatch = (a) => `<span class="swatch" style="background:${color(a)}"></span>`;
@@ -1131,6 +1300,7 @@
       <div class="field"><label for="cf-bal">CF Bal</label>
         <input id="cf-bal" name="balance" class="input input-xl num" inputmode="numeric" autocomplete="off" enterkeyhint="done" data-autofocus>
         <span class="field-hint" id="cf-hint"></span><span class="field-error"></span></div>
+      <div id="cf-slot"></div>
       <div class="field field-sale"><label for="cf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="cf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填，例如 2B">
         <span class="field-hint">這次 CF Bal 增加的部分裡，有多少是賣東西換來的。只是標示來源，不會改變 CF Bal、Stock 或購入的計算。</span><span class="field-error"></span></div>
@@ -1155,7 +1325,9 @@
         inp.value = existing ? fmtFull(existing.balance) : '';
         form.fromSales.value = existing && existing.fromSales != null ? fmtFull(existing.fromSales) : '';
         $('#cf-timers', m.el).innerHTML = timerChecks(Store.account(a), date, 'cft-');
+        $('#cf-slot', m.el).innerHTML = slotPicker('cfslot', a, date, Store.suggestSlot(a, date));
       }
+      updateSlotHint(m.el, 'cfslot', a, date);
       const prev = Calc.latestBefore(Calc.list(a), date);
       inp.placeholder = prev ? fmtFull(prev.balance) : '例如 12,345';
       $('#cf-hint', m.el).innerHTML = existing ? `這天已記過 <b>${fmt(existing.balance)}</b>，儲存會更新` : prev ? `上次 ${fmt(prev.balance)}（${fmtDate(prev.date)}）` : '這個帳號的第一筆';
@@ -1180,14 +1352,15 @@
       const a = aid(); const date = form.date.value;
       const existing = Store.recordFor(a, D.normalizeDate(date) || '');
       try {
-        const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '', fromSales: form.fromSales.value });
+        const res = Store.saveRecord({ date, accountId: a, balance: inp.value, shipped: existing ? existing.shipped : null, note: existing ? existing.note : '', fromSales: form.fromSales.value }, null, { slot: pickedSlot(m.el, 'cfslot') });
         // 有勾的定時事項記在這天；取消勾選就拿掉這天的記錄
         const done = [];
         TIMER_KINDS.forEach((k) => {
           const box = form.querySelector(`[name="cft-${k}"]`);
           if (box && Store.markTimer(a, k, res.record.date, box.checked) && box.checked) done.push(Store.TIMERS[k].label);
         });
-        toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}${done.length ? `，${done.join('、')} 已記下` : ''}`);
+        toast(`${res.mode === 'created' ? '已記錄' : '已更新'}：${Store.account(a).name} CF Bal ${fmt(res.record.balance)}${checkinToast(res)}${done.length ? `，${done.join('、')} 已記下` : ''}`);
+        loadedFor = '';
         if (!next) { m.close(); return; }
         const d = res.record.date;
         $('#cf-chips', m.el).innerHTML = acctChips(accts, a, (x) => Store.recordFor(x.id, d));
@@ -1806,6 +1979,7 @@
       <div class="field field-sale"><label for="rf-sold">${icon('tag', 'icon-sm')}其中出售東西所得 <span class="tag tag-gold">賣貨</span></label>
         <input id="rf-sold" name="fromSales" class="input num" inputmode="numeric" autocomplete="off" placeholder="選填" value="${val(init.fromSales)}">
         <span class="field-hint">這次增加的部分裡，有多少是賣東西換來的。只是標示，不會改變 CF Bal、Stock 或 Stock Acquired。</span><span class="field-error"></span></div>
+      <div id="rf-slot"></div>
       <div class="timer-checks" id="rf-timers"></div>
       <div class="calc-box" id="rf-calc" aria-live="polite"></div>
       <div class="field"><label for="rf-note">備註</label><input id="rf-note" name="note" class="input" maxlength="200" value="${esc(init.note)}" placeholder="例如：出貨給某某、活動加倍"><span class="field-error"></span></div>
@@ -1833,7 +2007,10 @@
       if (date && v.accountId && timersFor !== v.accountId + '|' + date) {
         timersFor = v.accountId + '|' + date;
         $('#rf-timers', m.el).innerHTML = timerChecks(Store.account(v.accountId), date, 'rft-');
+        // 編輯舊記錄預設「不記」，免得改個數字就多出一筆開始時間
+        $('#rf-slot', m.el).innerHTML = slotPicker('rfslot', v.accountId, date, editId ? '' : Store.suggestSlot(v.accountId, date));
       }
+      if (date && v.accountId) updateSlotHint(m.el, 'rfslot', v.accountId, date);
       const clashBox = $('#rf-clash', m.el);
       const existing = date && v.accountId ? Store.recordFor(v.accountId, date) : null;
       clashBox.innerHTML = '';
@@ -1891,7 +2068,7 @@
     function save(keepOpen) {
       try {
         const v = read();
-        const res = Store.saveRecord(v, editId);
+        const res = Store.saveRecord(v, editId, { slot: pickedSlot(m.el, 'rfslot') });
         ui.lastAccountId = v.accountId; saveUI();
         TIMER_KINDS.forEach((k) => {
           const box = form.querySelector(`[name="rft-${k}"]`);
@@ -1899,7 +2076,7 @@
         });
         timersFor = '';
         const a = Store.account(v.accountId);
-        toast(`${res.mode === 'created' ? '已新增' : '已更新'}：${a.name} · ${fmtDate(res.record.date)}`);
+        toast(`${res.mode === 'created' ? '已新增' : '已更新'}：${a.name} · ${fmtDate(res.record.date)}${checkinToast(res)}`);
         if (!keepOpen) { m.close(); return; }
         // 換到下一個啟用帳號，保留日期
         const active = Store.accounts().filter((x) => x.status === 'active');
@@ -1964,6 +2141,10 @@
             ${date !== today ? '<button type="button" class="btn btn-sm" data-day="today">回到今天</button>' : '<span class="tag tag-ok">今天</span>'}
           </div>
           <div class="entry-progress"><span>${fmtDateWeek(date)}</span><b>${recorded} / ${accounts.length}</b> 個帳號已記錄</div>
+          <label class="entry-slot">${icon('clock', 'icon-sm')}<span>開始時段</span>
+            <select class="input input-sm" id="entrySlot" aria-label="這次記錄算哪個時段開始刷 CF">
+              <option value="auto">自動（依各帳號時段）</option>${Monitor.SLOTS.map((s) => `<option value="${s.id}">${s.label}（${slotRange(s.id)}）</option>`).join('')}<option value="">不記開始時間</option>
+            </select></label>
         </div>
         <p class="help">${icon('info')}<span>每天填各帳號的 <b>CF Bal</b>；出貨用「＋出貨」另外記，會自動算進來。<b>Stock Acquired = CF Bal 變化 ＋ 出貨</b>，會自動算出，算在 <b>${fmtDate(salesDateFor(date))}</b>${salesPrev() ? '（前一天）' : ''}。出貨不會扣 Stock Acquired。${isIOS ? '用鍵盤上方的 ⌄ 箭頭切換到下一格。' : '在 CF Bal 欄按 <kbd>Enter</kbd> 會跳到下一個帳號。'}</span></p>
         <div class="entry-table">
@@ -2103,11 +2284,13 @@
       if (!values.length && !timerChanges.length) { toast('沒有需要儲存的內容', 'info'); return; }
       leaveGuard = null;
       safely(() => {
-        const res = values.length ? Store.saveMany(values) : null;
+        // 有存 CF Bal 的帳號，順便記下這個時段的開始時間（自動 = 各帳號自己的預設時段；沒設定時段的不記）
+        const mode = $('#entrySlot', view).value;
+        const res = values.length ? Store.saveMany(values, { slotFor: (aid) => (mode === 'auto' ? Store.suggestSlot(aid, date) : mode) }) : null;
         let marked = 0;
         timerChanges.forEach(([aid, k, on]) => { if (Store.markTimer(aid, k, date, on)) marked++; });
         const parts = [];
-        if (res) parts.push(`${values.length} 個帳號（新增 ${res.created}、更新 ${res.updated}）`);
+        if (res) parts.push(`${values.length} 個帳號（新增 ${res.created}、更新 ${res.updated}${res.checked ? `，${res.checked} 個記了開始時間` : ''}）`);
         if (marked) parts.push(`${marked} 項續期／領取`);
         toast(`已儲存 ${parts.join('、') || '（沒有變動）'}`);
       });
@@ -2338,7 +2521,7 @@
             <header class="acct-head">${a.avatar || j ? charStage(a) : avatar(a, 'hero')}<div class="grow"><h3>${esc(a.name)}</h3>
               <p>${j ? `<span class="job-name">${esc(j.name)}</span><span class="job-sub">${JOB_TYPES[j.type].label} · ${JOB_BRANCHES[j.branch].label}</span>` : `<button type="button" class="link-btn" data-edit-account="${a.id}">選擇職業</button>`}</p>
               <p class="muted">${a.gameId ? `ID：${esc(a.gameId)}` : '未填遊戲內 ID'}</p></div>${statusTag(a)}</header>
-            ${a.status === 'active' ? `<div class="timer-rows">${TIMER_KINDS.map((k) => timerRow(a, k)).join('')}</div>` : ''}
+            ${a.status === 'active' ? `${slotStrip(a)}<div class="timer-rows">${TIMER_KINDS.map((k) => timerRow(a, k)).join('')}</div>` : ''}
             <p class="acct-note">${esc(a.note) || '<span class="muted">沒有備註</span>'}</p>
             <div class="acct-stats">
               <div><span>Stock（CF Bal）</span><b>${fmt(x.latest && x.latest.balance)}</b></div>
@@ -2390,9 +2573,13 @@
           <div class="pic-row"><label class="btn btn-sm">${icon('upload')}上傳圖片<input type="file" id="af-pic" accept="image/png,image/jpeg,image/webp" hidden></label>
           <button type="button" class="btn btn-sm btn-ghost" id="af-pic-clear">移除圖片</button></div>
           <span class="field-hint">放你角色的遊戲截圖（去背的 PNG 最好看），會站在平台上像遊戲裡一樣。只存在你的帳本裡（跟著雲端同步），不會放到 GitHub。</span><span class="field-error" data-err="avatar"></span></div>
+        <fieldset class="field"><legend>刷 CF 時段</legend>
+          <div class="slot-chips">${Monitor.SLOTS.map((s) => `<label class="slot-chip is-mine"><input type="checkbox" name="slot-${s.id}" ${a.slots && a.slots[s.id] ? 'checked' : ''}><span><b>${s.label}</b><small>${slotRangeShort(s.id)}</small></span></label>`).join('')}</div>
+          <span class="field-hint">選這個角色要在哪些時段開始刷 CF。每個時段從勾選那天開始監控，之前的日子不會算漏刷。</span></fieldset>
         <fieldset class="field"><legend>提醒</legend>
-          <label class="check-row"><input type="checkbox" name="trackBoost" ${track.boost !== false ? 'checked' : ''}><span><b>Artificial Boost - Mesos Drop Rate</b><small>每 30 天續期一次，快到期時提醒</small></span></label>
+          <label class="check-row"><input type="checkbox" name="trackBoost" ${track.boost !== false ? 'checked' : ''}><span><b>Maple Union Artifact</b><small>每 30 天續期一次，快到期時提醒</small></span></label>
           <label class="check-row"><input type="checkbox" name="trackUnion" ${track.union !== false ? 'checked' : ''}><span><b>Maple Union Coin</b><small>每 3 天領一次，可以領時提醒</small></span></label>
+          <label class="check-row"><input type="checkbox" name="trackBooster" ${track.booster !== false ? 'checked' : ''}><span><b>Maple Union Mesos Booster</b><small>每週日之前要買好，這週還沒買就提醒（週六是最後一天）</small></span></label>
         </fieldset>
         <div class="field"><label for="af-gid">遊戲內 ID</label><input id="af-gid" name="gameId" class="input" maxlength="60" value="${esc(a.gameId)}" placeholder="例如：TW-100231"><span class="field-hint">匯入 CSV 時可用來對應帳號。</span><span class="field-error"></span></div>
         <div class="field"><label for="af-note">備註</label><textarea id="af-note" name="note" class="input" rows="3" maxlength="300" placeholder="伺服器、角色、用途…">${esc(a.note)}</textarea><span class="field-error"></span></div>
@@ -2425,7 +2612,9 @@
     const save = () => {
       const input = {
         name: form.name.value, gameId: form.gameId.value, note: form.note.value, status: form.status.value,
-        job: form.job.value, avatar: pic, track: { boost: form.trackBoost.checked, union: form.trackUnion.checked },
+        job: form.job.value, avatar: pic, track: { boost: form.trackBoost.checked, union: form.trackUnion.checked, booster: form.trackBooster.checked },
+        // 已經勾過的時段保留原本的開始監控日；新勾的從今天開始
+        slots: Object.fromEntries(Monitor.SLOTS.filter((s) => form[`slot-${s.id}`].checked).map((s) => [s.id, (a.slots && a.slots[s.id]) || D.todayISO()])),
       };
       try {
         if (account) { Store.updateAccount(account.id, input); toast('已更新帳號'); } else { const acc = Store.addAccount(input); toast(`已新增帳號「${acc.name}」`); }
@@ -2463,6 +2652,235 @@
   }
 
   /* ================= 設定與備份 ================= */
+  /* ================= 準時監控 =================
+   * 全部從實際存下來的打卡（Store.state.checkins）和帳號的時段設定即時計算（GCT.Monitor），沒有假資料 */
+  function monRange() {
+    const today = D.todayISO();
+    if (ui.monRange === 'custom' && D.isISODate(ui.monStart) && D.isISODate(ui.monEnd) && ui.monStart <= ui.monEnd) {
+      return { start: ui.monStart, end: ui.monEnd, label: `${fmtDate(ui.monStart)} – ${fmtDate(ui.monEnd)}` };
+    }
+    const n = Number(ui.monRange) || 7;
+    const start = D.addDays(today, -(n - 1));
+    return { start, end: today, label: `最近 ${n} 天（${fmtDate(start)} – ${fmtDate(today)}）` };
+  }
+  // 預設看「有設定時段或有打卡」的帳號
+  function selectedMonAccounts() {
+    const cks = Store.state.checkins || [];
+    const tracked = Store.accounts().filter((a) => accSlots(a).length || cks.some((c) => c.accountId === a.id)).map((a) => a.id);
+    if (Array.isArray(ui.monAccounts)) {
+      const ids = ui.monAccounts.filter((id) => Store.account(id));
+      if (ids.length || !ui.monAccounts.length) return ids;
+    }
+    return tracked;
+  }
+  const pct = (r) => (r == null ? '—' : `${Math.round(r * 100)}%`);
+  // 準時／延遲／未記錄的比例條
+  const stackBar = (s) => {
+    const t = s.ontime + s.late + s.missed;
+    if (!t) return '<div class="stack-bar is-empty"></div>';
+    const w = (n) => `${((n / t) * 100).toFixed(2)}%`;
+    return `<div class="stack-bar"><span class="sb-ok" style="width:${w(s.ontime)}"></span><span class="sb-warn" style="width:${w(s.late)}"></span><span class="sb-bad" style="width:${w(s.missed)}"></span></div>`;
+  };
+  const hoursChip = (s) => (s.avail ? `<span class="mc mc-hours" title="刷了多久 ÷ 應刷多久（每個時段 6 小時）">刷 ${fmtHours(s.farm)}（${pct(s.farmRate)}）</span>` : '');
+  const countChips = (s) => `<span class="mc mc-ok">準時 ${s.ontime}</span><span class="mc mc-warn">延遲 ${s.late}</span><span class="mc mc-bad">未記錄 ${s.missed}</span>${s.open ? `<span class="mc mc-info">進行中 ${s.open}</span>` : ''}`;
+
+  function renderMonitor(view) {
+    if (!Store.accounts().length) { view.innerHTML = noAccountsState(); return; }
+    const today = D.todayISO();
+    const anySlots = Store.accounts().some((a) => accSlots(a).length);
+    $('#pageActions').innerHTML = `<a class="btn" href="#/settings" title="調整準時標準">${icon('settings')}準時標準 ${Monitor.config().grace} 分鐘</a>
+      <button type="button" class="btn btn-primary" data-action="cf">${icon('coin')}記 CF Bal</button>`;
+    view.innerHTML = `
+      <section class="filterbar card-flat">
+        <div class="seg" role="group" aria-label="日期範圍">
+          ${[['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['custom', '自訂']].map(([v, l]) => `<button type="button" class="seg-btn ${ui.monRange === v ? 'active' : ''}" data-mrange="${v}" aria-pressed="${ui.monRange === v}">${l}</button>`).join('')}
+        </div>
+        <div class="custom-range" ${ui.monRange === 'custom' ? '' : 'hidden'}>
+          <input type="date" class="input input-sm" data-mcustom="start" aria-label="開始日期" value="${esc(ui.monStart)}" max="${today}">
+          <span>至</span>
+          <input type="date" class="input input-sm" data-mcustom="end" aria-label="結束日期" value="${esc(ui.monEnd)}" max="${today}">
+        </div>
+        <div class="acct-picker" id="monPicker"></div>
+        <span class="filter-note" id="monNote"></span>
+      </section>
+      ${anySlots ? '' : `<div class="notice notice-info">${icon('info')}<div><b>還沒有帳號設定刷 CF 時段</b><p>到「帳號」編輯角色，勾選早上／下午／晚上。之後記 CF Bal 時會自動記下開始時間，這裡就會開始統計。</p></div><a class="btn btn-sm" href="#/accounts">${icon('accounts')}去設定</a></div>`}
+      <section class="card" id="monToday"></section>
+      <section class="kpi-grid" id="monKpis"></section>
+      <section class="mon-grid">
+        <article class="card mon-trend"><header class="card-head"><div><h3>每天準時率</h3><p class="card-sub">點圖或下面的長條看那天的明細</p></div></header><div id="monTrend"></div><div class="mon-days" id="monDays"></div></article>
+        <article class="card"><header class="card-head"><div><h3>早上／下午／晚上</h3><p class="card-sub">點一列看那個時段的明細</p></div></header><div id="monSlots"></div></article>
+      </section>
+      <section class="card"><header class="card-head"><div><h3>各帳號</h3><p class="card-sub">準時率低的排前面，點帳號看明細</p></div></header><div id="monAccts"></div></section>`;
+
+    $$('[data-mrange]', view).forEach((b) => b.addEventListener('click', () => {
+      ui.monRange = b.dataset.mrange;
+      if (ui.monRange === 'custom' && !(D.isISODate(ui.monStart) && D.isISODate(ui.monEnd))) { ui.monStart = D.addDays(today, -13); ui.monEnd = today; }
+      saveUI(); render(false);
+    }));
+    $$('[data-mcustom]', view).forEach((inp) => inp.addEventListener('change', () => {
+      const s = $('[data-mcustom="start"]', view).value; const e = $('[data-mcustom="end"]', view).value;
+      if (!D.isISODate(s) || !D.isISODate(e)) return;
+      if (s > e) { toast('開始日期不能晚於結束日期', 'error'); return; }
+      if (D.daysBetween(s, e) > 366) { toast('期間最多一年', 'error'); return; }
+      ui.monStart = s; ui.monEnd = e; saveUI(); update(false);
+    }));
+
+    function update(pickerOpen) {
+      Charts.cleanup();
+      const ids = selectedMonAccounts();
+      const range = monRange();
+      renderAcctPicker($('#monPicker', view), ids, (next) => { ui.monAccounts = next; saveUI(); update(true); }, pickerOpen);
+      $('#monNote', view).textContent = range.label;
+      const now = new Date();
+      const cells = Monitor.cells(ids, range.start, range.end, now);
+      const sum = Monitor.summarize(cells);
+      const detail = (filter) => openMonDetail(cells, filter);
+
+      // ----- 今天 -----
+      const tCells = Monitor.cells(ids, today, today, now);
+      const cur = Monitor.slotOf(now);
+      const tAccts = ids.map((id) => Store.account(id)).filter((a) => a && tCells.some((c) => c.account.id === a.id));
+      $('#monToday', view).innerHTML = `<header class="card-head"><div><h3>今天 · ${fmtDateWeek(today)}</h3><p class="card-sub">現在 ${fmtTime(now.toISOString())}${cur.slot ? `，${slotLabel(cur.slot)}時段（${slotRange(cur.slot)}）` : '，不在任何時段（00:00–6:00 AM）'}</p></div></header>
+        ${tAccts.length ? `<div class="today-grid"><div class="tg-head"><span>帳號</span>${Monitor.SLOTS.map((s) => `<span>${s.label}<small>${slotRangeShort(s.id)}</small></span>`).join('')}</div>
+          ${tAccts.map((a) => `<div class="tg-row"><span class="cell-acct">${avatar(a, 'xs')}<span class="tg-name"><b>${esc(a.name)}</b><small>今天刷了 ${fmtHoursShort(tCells.filter((x) => x.account.id === a.id).reduce((t, x) => t + (x.farm || 0), 0))}</small></span></span>${Monitor.SLOTS.map((s) => {
+            const c = tCells.find((x) => x.account.id === a.id && x.slot === s.id);
+            if (!c) return '<span class="tg-cell is-off"><small>不負責</small></span>';
+            return `<button type="button" class="tg-cell ms-${MON_STATUS[c.status].cls}" data-tg="${a.id}|${s.id}">${monBadge(c)}<small>${c.checkin ? `${fmtTime(c.checkin.startedAt)}<br>刷${fmtHoursShort(c.farm)}` : c.status === 'open' ? `已過 ${fmtDelay(c.delay).replace('晚 ', '')}` : c.status === 'upcoming' ? h12(s.start) : '沒記錄'}</small></button>`;
+          }).join('')}</div>`).join('')}</div>`
+        : `<div class="mini-empty">${icon('clock')}所選帳號今天沒有要監控的時段</div>`}`;
+      $$('[data-tg]', view).forEach((b) => b.addEventListener('click', () => { const [aid, slot] = b.dataset.tg.split('|'); detail({ accountId: aid, date: today, slot }); }));
+
+      // ----- 摘要 -----
+      const unit = (t) => `<small class="unit">${t}</small>`;
+      $('#monKpis', view).innerHTML = [
+        kpiCard({ ic: 'check', tone: 'green', label: '準時率', value: sum.rate == null ? '<span class="muted">—</span>' : `${Math.round(sum.rate * 100)}${unit('%')}`, sub: sum.judged ? `準時 ${sum.ontime} 次 / 共 ${sum.judged} 個時段${sum.open ? `，${sum.open} 個進行中` : ''}` : '還沒有可以判斷的時段', tip: `準時 ÷（準時＋延遲＋未記錄）。時段開始後 ${Monitor.config().grace} 分鐘內開始算準時；進行中、未開始的不算。` }),
+        kpiCard({ ic: 'week', tone: 'blue', label: '刷 CF 時數', value: sum.avail ? `${+(sum.farm / 60).toFixed(1)}${unit('小時')}` : '<span class="muted">—</span>', sub: sum.avail ? `應刷 ${fmtHours(sum.avail)}，刷了 ${pct(sum.farmRate)}` : '還沒有記錄或結束的時段', tip: '每個時段結束都準時停，所以刷了多久 = 時段結束 − 開始時間；晚開始就少，沒記錄算 0，提早開始最多算滿 6 小時。應刷 = 有記錄或已結束的時段 × 6 小時（進行中還沒記錄的先不算）。' }),
+        kpiCard({ ic: 'clock', tone: 'gold', label: '延遲', value: `${sum.late}${unit('次')}`, sub: sum.avgLate == null ? '沒有延遲' : `平均延遲 ${fmtLate(sum.avgLate)}`, tip: '平均延遲只算延遲（或時段結束後才補記）的那幾次。' }),
+        kpiCard({ ic: 'alert', tone: 'rose', label: '未記錄／可能漏刷', value: `${sum.missed}${unit('次')}`, sub: '時段結束後都沒有記錄', tip: Monitor.config().afterEnd === 'missed' ? '設定為「時段結束後才補記算漏刷」，所以也包含太晚才記的。' : '時段結束後才補記的算延遲，不算在這裡（可在設定改）。' }),
+      ].join('');
+
+      // ----- 每天趨勢 -----
+      const days = D.eachDay(range.start, range.end > today ? today : range.end);
+      const perDay = days.map((d) => Monitor.summarize(cells.filter((c) => c.date === d)));
+      const trendHost = $('#monTrend', view);
+      if (!sum.judged && !sum.open) {
+        trendHost.innerHTML = `<div class="chart-empty" style="height:180px">${icon('clock')} 這段期間還沒有可以判斷的時段${anySlots ? '' : '（先到帳號設定時段）'}</div>`;
+        $('#monDays', view).innerHTML = '';
+      } else {
+        Charts.lineChart(trendHost, {
+          labels: days, height: 220, includeZero: true, dots: true, smooth: false, ariaLabel: '每天準時率',
+          axisFormat: (v) => `${v}%`,
+          series: [{ name: '準時率', ...BLUE, area: true, connect: true, values: perDay.map((s) => (s.rate == null ? null : Math.round(s.rate * 100))) }],
+          tooltip: (i) => `${tipHead(days[i])}<div class="tip-row"><b>${pct(perDay[i].rate)}</b> 準時率</div><div class="tip-note">準時 ${perDay[i].ontime} · 延遲 ${perDay[i].late} · 未記錄 ${perDay[i].missed}${perDay[i].open ? ` · 進行中 ${perDay[i].open}` : ''}</div><div class="tip-note">刷了 ${fmtHours(perDay[i].farm)}${perDay[i].avail ? `（${pct(perDay[i].farmRate)}）` : ''}</div><div class="tip-note">點一下看明細</div>`,
+          onPick: (i) => detail({ date: days[i] }),
+          emptyText: '這段期間還沒有結束的時段',
+        });
+        const maxN = Math.max(1, ...perDay.map((s) => s.ontime + s.late + s.missed + s.open));
+        $('#monDays', view).innerHTML = `<div class="day-bars" style="--n:${days.length}">${days.map((d, i) => {
+          const s = perDay[i]; const h = (n) => `${(n / maxN) * 100}%`;
+          return `<button type="button" class="day-bar" data-day="${d}" title="${fmtDate(d)}：準時 ${s.ontime}、延遲 ${s.late}、未記錄 ${s.missed}${s.open ? `、進行中 ${s.open}` : ''}">
+            <span class="db-stack"><span class="sb-bad" style="height:${h(s.missed)}"></span><span class="sb-warn" style="height:${h(s.late)}"></span><span class="sb-ok" style="height:${h(s.ontime)}"></span><span class="sb-info" style="height:${h(s.open)}"></span></span>
+            <small>${d.slice(8)}</small></button>`;
+        }).join('')}</div><div class="legend"><span><i class="lg-ok"></i>準時</span><span><i class="lg-warn"></i>延遲</span><span><i class="lg-bad"></i>未記錄</span><span><i class="lg-info"></i>進行中</span></div>`;
+        $$('[data-day]', view).forEach((b) => b.addEventListener('click', () => detail({ date: b.dataset.day })));
+      }
+
+      // ----- 時段比較 -----
+      $('#monSlots', view).innerHTML = `<div class="slot-compare">${Monitor.SLOTS.map((s) => {
+        const x = Monitor.summarize(cells.filter((c) => c.slot === s.id));
+        return `<button type="button" class="sc-row" data-slot="${s.id}">
+          <div class="sc-top"><b>${s.label}</b><small>${slotRange(s.id)}</small><span class="grow"></span><b class="sc-rate">${pct(x.rate)}</b></div>
+          ${stackBar(x)}<div class="sc-meta">${hoursChip(x)}${countChips(x)}${x.avgLate != null ? `<span class="muted">平均延遲 ${fmtLate(x.avgLate)}</span>` : ''}</div></button>`;
+      }).join('')}</div>`;
+      $$('[data-slot]', $('#monSlots', view)).forEach((b) => b.addEventListener('click', () => detail({ slot: b.dataset.slot })));
+
+      // ----- 各帳號 -----
+      const rows = ids.map((id) => Store.account(id)).filter(Boolean).map((a) => ({ a, s: Monitor.summarize(cells.filter((c) => c.account.id === a.id)) }))
+        .filter((r) => r.s.judged || r.s.open || accSlots(r.a).length)
+        .sort((x, y) => (x.s.rate == null ? 2 : x.s.rate) - (y.s.rate == null ? 2 : y.s.rate) || y.s.missed - x.s.missed);
+      $('#monAccts', view).innerHTML = rows.length ? `<div class="mon-accts">${rows.map(({ a, s }) => `
+        <button type="button" class="ma-row" data-acct="${a.id}">
+          <span class="cell-acct">${avatar(a, 'sm')}<span><b>${esc(a.name)}</b><small>${accSlots(a).map(slotLabel).join('、') || '沒設定時段'}</small></span></span>
+          <span class="ma-rate"><b>${pct(s.rate)}</b><small>準時率</small></span>
+          <span class="ma-bar">${stackBar(s)}<span class="sc-meta">${hoursChip(s)}${countChips(s)}</span></span>
+          <span class="ma-delay"><b>${s.avgLate == null ? '—' : fmtLate(s.avgLate)}</b><small>平均延遲</small></span>
+        </button>`).join('')}</div>` : `<div class="mini-empty">${icon('accounts')}所選帳號都沒有設定時段，也沒有打卡記錄</div>`;
+      $$('[data-acct]', view).forEach((b) => b.addEventListener('click', () => detail({ accountId: b.dataset.acct })));
+    }
+    update();
+  }
+
+  // 明細：依帳號／日期／時段篩選，最新的在上面；可以刪掉記錯的開始時間
+  function openMonDetail(cells, filter) {
+    let status = 'all';
+    const base = cells.filter((c) => c.status !== 'upcoming'
+      && (!filter.accountId || c.account.id === filter.accountId)
+      && (!filter.date || c.date === filter.date)
+      && (!filter.slot || c.slot === filter.slot));
+    const order = { am: 0, pm: 1, eve: 2 };
+    base.sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : order[x.slot] - order[y.slot] || x.account.name.localeCompare(y.account.name, 'zh-Hant')));
+    const title = [filter.accountId ? Store.account(filter.accountId).name : '', filter.date ? fmtDate(filter.date) : '', filter.slot ? slotLabel(filter.slot) : ''].filter(Boolean).join(' · ') || '全部';
+    const m = openModal({ title: `明細：${title}`, size: 'modal-lg', body: '<div id="mdBody"></div>' });
+    const draw = () => {
+      const list = base.filter((c) => status === 'all' || c.status === status);
+      const s = Monitor.summarize(base);
+      $('#mdBody', m.el).innerHTML = `
+        <div class="md-sum">${stackBar(s)}<div class="sc-meta"><b>準時率 ${pct(s.rate)}</b>${hoursChip(s)}${countChips(s)}${s.avgLate != null ? `<span class="muted">平均延遲 ${fmtLate(s.avgLate)}</span>` : ''}</div></div>
+        <div class="chips md-filter" role="group" aria-label="狀態">${[['all', '全部'], ['late', '延遲'], ['missed', '未記錄'], ['ontime', '準時'], ['open', '進行中']].map(([k, l]) => `<button type="button" class="chip ${status === k ? 'active' : ''}" data-st="${k}">${l}</button>`).join('')}</div>
+        ${list.length ? `<ul class="md-list">${list.map((c) => {
+          const ck = c.checkin;
+          return `<li class="md-item ms-${MON_STATUS[c.status].cls}">
+            <div class="md-when"><b>${fmtDate(c.date)}</b><small>週${WEEK[D.parseISO(c.date).getDay()]} · ${slotLabel(c.slot)} ${slotRange(c.slot)}</small></div>
+            <div class="md-who">${avatar(c.account, 'xs')}<span>${esc(c.account.name)}${c.assigned ? '' : '<small class="muted">（不是這個帳號的時段）</small>'}</span></div>
+            <div class="md-what">${monBadge(c)}<span>${monNote(c)}</span>
+              ${ck ? `<small class="muted">實際開始 ${fmtStamp(ck.startedAt)}${ck.updatedAt && ck.updatedAt.slice(0, 16) !== ck.startedAt.slice(0, 16) ? ` · 最後修改 ${fmtStamp(ck.updatedAt)}` : ''}${ck.balance != null ? ` · CF Bal ${fmt(ck.balance)}` : ''}</small>` : ''}</div>
+            ${ck && !Store.readOnly ? `<button type="button" class="icon-btn danger" data-del-ck="${ck.id}" title="刪除這個開始時間（記錯時用）" aria-label="刪除開始時間">${icon('trash')}</button>` : ''}
+          </li>`;
+        }).join('')}</ul>` : `<div class="mini-empty">${icon('check')}沒有符合的時段</div>`}`;
+      $$('[data-st]', m.el).forEach((b) => b.addEventListener('click', () => { status = b.dataset.st; draw(); }));
+      $$('[data-del-ck]', m.el).forEach((b) => b.addEventListener('click', async () => {
+        const ck = (Store.state.checkins || []).find((x) => x.id === b.dataset.delCk);
+        if (!ck) return;
+        const ok = await confirmDialog({ title: '刪除開始時間', message: `刪除 <b>${esc(Store.account(ck.accountId).name)}</b> ${fmtDate(ck.date)} ${slotLabel(ck.slot)} 的開始時間（${fmtTime(ck.startedAt)}）？<br><small>CF Bal 記錄不受影響。刪除後這個時段會變回未記錄，下次記 CF Bal 時會重新記下開始時間。</small>`, confirmText: '刪除', danger: true });
+        if (!ok) return;
+        safely(() => { Store.deleteCheckin(ck.id); toast('已刪除開始時間'); m.close(); });
+      }));
+    };
+    draw();
+  }
+
+  // 準時監控設定：寬限分鐘、時段結束後才補記算延遲還是漏刷
+  function monitorSettingsCard() {
+    const m = Monitor.config();
+    return `<section class="card" id="monSettings">
+      <header class="card-head"><div><h3>${icon('clock', 'icon-sm')} 準時監控</h3><p class="card-sub">早上 ${slotRange('am')} · 下午 ${slotRange('pm')} · 晚上 ${slotRange('eve')}（本地時間）</p></div>
+        <a class="btn btn-sm" href="#/monitor">${icon('clock')}查看監控</a></header>
+      <form class="form" id="monForm" novalidate>
+        <div class="field"><label for="mf-grace">準時標準：時段開始後幾分鐘內開始算準時</label>
+          <div class="input-group"><input id="mf-grace" name="grace" class="input num" inputmode="numeric" value="${m.grace}" style="max-width:120px"><span class="input-suffix">分鐘</span><button type="submit" class="btn btn-primary">儲存</button></div>
+          <span class="field-hint">例如 30：早上 6:00 AM 的時段，6:30 AM 前開始算準時，之後算延遲。可以填 0–360。</span><span class="field-error"></span></div>
+        <fieldset class="field"><legend>時段結束後才補記</legend>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="afterEnd" value="late" ${m.afterEnd !== 'missed' ? 'checked' : ''}><span><b>算延遲</b><small>有記錄就不算漏刷，延遲時間照實計算</small></span></label>
+            <label class="radio"><input type="radio" name="afterEnd" value="missed" ${m.afterEnd === 'missed' ? 'checked' : ''}><span><b>算漏刷</b><small>時段都過了才記，視同沒有準時刷</small></span></label>
+          </div></fieldset>
+      </form>
+    </section>`;
+  }
+  function bindMonitorSettings(view) {
+    const form = $('#monForm', view);
+    if (!form) return;
+    const save = (msg) => safely(() => {
+      const g = String(form.grace.value).trim();
+      if (!/^\d{1,3}$/.test(g) || Number(g) > 360) { setFieldErrors(form, { grace: '請輸入 0–360 的整數' }); return; }
+      setFieldErrors(form, {});
+      Store.updateSettings({ monitor: { grace: Number(g), afterEnd: form.querySelector('[name="afterEnd"]:checked').value === 'missed' ? 'missed' : 'late' } });
+      toast(msg || `準時標準改為 ${g} 分鐘內`);
+    });
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    $$('[name="afterEnd"]', form).forEach((r) => r.addEventListener('change', () => save(r.value === 'missed' ? '時段結束後才記改為算漏刷' : '時段結束後才記改為算延遲')));
+  }
+
   function renderSettings(view) {
     const s = Store.state.settings;
     const last = s.lastBackupAt;
@@ -2483,6 +2901,8 @@
               </div></fieldset>
           </form>
         </section>
+
+        ${monitorSettingsCard()}
 
         ${window.GCTAuth && window.GCTAuth.enabled ? (() => {
           const s = window.GCTAuth.session();
@@ -2547,6 +2967,7 @@
         </section>
       </div>`;
 
+    bindMonitorSettings(view);
     $('#setForm', view).addEventListener('submit', (e) => {
       e.preventDefault();
       const form = e.target;
@@ -3221,7 +3642,7 @@
   }
 
   /* ================= 啟動 ================= */
-  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, sales: renderSales, entry: renderEntry, records: renderRecords, accounts: renderAccounts, settle: renderSettle, settings: renderSettings };
+  const PAGES = { dashboard: renderDashboard, analytics: renderAnalytics, sales: renderSales, entry: renderEntry, monitor: renderMonitor, records: renderRecords, accounts: renderAccounts, settle: renderSettle, settings: renderSettings };
   let nextRenderEnter = false;
 
   function focusRecordSearch() {
@@ -3236,6 +3657,8 @@
   document.addEventListener('click', (e) => {
     const th = e.target.closest('[data-theme-set]');
     if (th) { setTheme(th.dataset.themeSet, e); return; }
+    const gm = e.target.closest('[data-game]');
+    if (gm) { switchGame(gm.dataset.game); return; }
     const t = e.target.closest('[data-action], [data-edit-record], [data-edit-account]');
     if (!t) return;
     if (t.dataset.editRecord) {
@@ -3285,7 +3708,10 @@
     }
   });
 
+  document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('[data-game-select]')) switchGame(e.target.value); });
   Store.onChange((source) => {
+    // 正在看其他遊戲：M Sea 的資料變動不用重畫那個遊戲的頁面
+    if (currentGame().id !== 'msea') return;
     // 同步帶進新資料時，如果每日錄入頁還有沒存的輸入，先不重畫，免得輸入被清掉
     if (source === 'sync' && leaveGuard && leaveGuard()) { toast('雲端有新資料，儲存後就會一起顯示', 'info'); return; }
     leaveGuard = null;
@@ -3318,15 +3744,25 @@
   window.addEventListener('storage', (e) => {
     if (e.key !== 'gct:data:v1' || Store.readOnly) return;
     Store.load();
+    if (currentGame().id !== 'msea') return;
     if (leaveGuard && leaveGuard()) { toast('資料已在其他分頁更新；這頁尚未儲存的輸入請重新確認', 'info'); return; }
     render(false);
     toast('資料已在其他分頁更新', 'info');
   });
+  // 給其他遊戲模組（例如 mm-app.js）共用的元件；它們不會碰 M Sea 的資料
+  window.GCTUI = {
+    $, $$, esc, icon, ui, saveUI, toast, openModal, confirmDialog, setFieldErrors, download, pickFile, readText, safely,
+    fmt, fmtFull, fmtSigned, deltaClass, fmtDate, fmtDateWeek, fmtDateTime, fmtStamp, fmtHours, kpiCard, emptyState, tipHead,
+    rerender: () => render(false),
+    refreshChrome: () => renderChrome(route().name),
+  };
+
   // 有設定 Google 登入時，登入完成才載入資料與畫面
   syncThemeColor();
   (window.GCTAuth ? window.GCTAuth.ready : Promise.resolve(null)).then((session) => {
     if (session) Store.claim(session.email);
     Store.load();
+    Games.start(session);
     if (Team) Team.init();
     render(true);
     if (Sync) Sync.start();

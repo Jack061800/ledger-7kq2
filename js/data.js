@@ -1,6 +1,6 @@
 /* 遊戲貨幣追蹤：資料層（儲存、驗證、計算、CSV）
  * 所有資料存在瀏覽器 localStorage，結構：
- * { version, settings: { currencyName, lastBackupAt, ... }, accounts: [...], records: [...], shipments: [...], deleted: [...] }
+ * { version, settings: { currencyName, lastBackupAt, monitor, ... }, accounts: [...], records: [...], shipments: [...], checkins: [...], deleted: [...] }
  */
 (function (global) {
   'use strict';
@@ -71,7 +71,47 @@
   // shipments：每一筆出貨（日期、帳號、數量），和每天的 CF Bal 記錄分開記
   function emptyState() {
     // salesDay：Sales 算在哪一天。'prev' = 前一天（今天記的 CF Bal 減昨天的，就是昨天賺的）；'same' = 記錄當天
-    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, salesDay: 'prev', updatedAt: null }, accounts: [], records: [], shipments: [], deleted: [] };
+    // monitor：準時監控的設定（見下方 MONITOR_DEFAULT）
+    // checkins：每個帳號每天每個時段「開始刷 CF」的打卡（見下方「時段與打卡」）
+    return { version: SCHEMA_VERSION, settings: { currencyName: '金幣', lastBackupAt: null, monthlyGoal: null, salesDay: 'prev', monitor: { ...MONITOR_DEFAULT }, updatedAt: null }, accounts: [], records: [], shipments: [], checkins: [], deleted: [] };
+  }
+
+  /* ---------- 時段與打卡 ----------
+   * 一天分三個時段（本地時區，開始時間算進該時段，結束時間不算）：
+   *   早上 am  06:00 ≤ t < 12:00
+   *   下午 pm  12:00 ≤ t < 18:00
+   *   晚上 eve 18:00 ≤ t < 24:00（午夜 00:00 屬於新的一天；00:00–05:59 不屬於任何時段）
+   * 帳號的 slots = { am: '2026-11-01', eve: '...' }：負責哪些時段、從哪天開始監控（之前的日子不算漏刷）
+   * 打卡 checkin = { id, accountId, date, slot, startedAt, updatedAt, balance }
+   *   同一帳號＋日期＋時段只有一筆；startedAt 是第一次記錄的實際時間，之後再存只更新 updatedAt 和 balance
+   */
+  const SLOTS = [
+    { id: 'am', label: '早上', start: 6, end: 12 },
+    { id: 'pm', label: '下午', start: 12, end: 18 },
+    { id: 'eve', label: '晚上', start: 18, end: 24 },
+  ];
+  const SLOT_BY = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
+  // grace：開始後幾分鐘內記錄算準時；afterEnd：時段結束後才補記算「延遲」還是「漏刷」
+  const MONITOR_DEFAULT = { grace: 30, afterEnd: 'late' };
+  const ckKey = (c) => `${c.accountId}|${c.date}|${c.slot}`;
+  function slotWindow(date, slot) {
+    const s = SLOT_BY[slot]; const d = parseISO(date);
+    // new Date(..., 24, 0) 會自動變成隔天 00:00
+    return { start: new Date(d.getFullYear(), d.getMonth(), d.getDate(), s.start, 0, 0, 0), end: new Date(d.getFullYear(), d.getMonth(), d.getDate(), s.end, 0, 0, 0) };
+  }
+  // 某個時間點屬於哪一天、哪個時段（00:00–05:59 的 slot 是 null）
+  function slotOf(at = new Date()) {
+    const h = at.getHours();
+    const s = SLOTS.find((x) => h >= x.start && h < x.end);
+    return { date: toISO(at), slot: s ? s.id : null };
+  }
+  function normMonitor(m) {
+    const out = { ...MONITOR_DEFAULT };
+    if (m && typeof m === 'object') {
+      if (Number.isInteger(m.grace) && m.grace >= 0 && m.grace <= 360) out.grace = m.grace;
+      if (m.afterEnd === 'missed') out.afterEnd = 'missed';
+    }
+    return out;
   }
 
   const nowISO = () => new Date().toISOString();
@@ -96,6 +136,7 @@
       if (Number.isInteger(obj.settings.monthlyGoal) && obj.settings.monthlyGoal > 0) state.settings.monthlyGoal = obj.settings.monthlyGoal;
       if (obj.settings.updatedAt) state.settings.updatedAt = String(obj.settings.updatedAt);
       if (obj.settings.salesDay === 'same') state.settings.salesDay = 'same';
+      state.settings.monitor = normMonitor(obj.settings.monitor);
     }
     if (Array.isArray(obj.deleted)) state.deleted = pruneTombs(obj.deleted.map((t) => ({ k: String(t && t.k || ''), at: String(t && t.at || '') })));
     const ids = new Set();
@@ -167,6 +208,23 @@
       if (x.rejected && typeof x.rejected === 'object') ship.rejected = { reason: String(x.rejected.reason || ''), note: String(x.rejected.note || ''), at: String(x.rejected.at || '') };
       state.shipments.push(ship);
     });
+    // 打卡：舊資料沒有這一項；格式不對的單筆直接略過（不讓整份帳本讀不進來）
+    const ckSeen = new Map();
+    (Array.isArray(obj.checkins) ? obj.checkins : []).forEach((c) => {
+      if (!c || !ids.has(String(c.accountId)) || !isISODate(c.date) || !SLOT_BY[c.slot]) return;
+      const t = new Date(c.startedAt);
+      if (!c.startedAt || Number.isNaN(t.getTime())) return;
+      const ck = {
+        id: String(c.id || uid('c')), accountId: String(c.accountId), date: c.date, slot: c.slot,
+        startedAt: t.toISOString(), updatedAt: c.updatedAt || t.toISOString(),
+      };
+      if (Number.isInteger(c.balance) && c.balance >= 0) ck.balance = c.balance;
+      const k = ckKey(ck);
+      const prev = ckSeen.get(k);
+      // 同一格有兩筆：保留最早的開始時間
+      if (!prev || ck.startedAt < prev.startedAt) ckSeen.set(k, ck);
+    });
+    state.checkins = Array.from(ckSeen.values());
     return state;
   }
 
@@ -174,13 +232,18 @@
    *   job      職業代號（見 app.js 的 JOBS），選填
    *   avatar   自己上傳的角色圖（縮小後的 data URL），選填
    *   track    要提醒的定時事項 { boost, union }，預設都要
-   *   timers   定時事項做過的日期 { boost: [...], union: [...] }，只留最近幾次
-   * boost = Artificial Boost - Mesos Drop Rate（30 天一次）；union = Maple Union Coin（3 天領一次）
+   *   timers   定時事項做過的日期 { boost: [...], union: [...], booster: [...] }，只留最近幾次
+   * boost   = Maple Union Artifact（30 天續期一次）
+   * union   = Maple Union Coin（3 天領一次）
+   * booster = Maple Union Mesos Booster（每週要在星期日之前買好：週日到週六算一週，週六是最後一天）
+   *   btn／check：按鈕和勾選框上的字
    */
   const TIMERS = {
-    boost: { label: 'Mesos Drop Boost', full: 'Artificial Boost - Mesos Drop Rate', days: 30, soon: 3, done: '續期' },
-    union: { label: 'Union Coin', full: 'Maple Union Coin', days: 3, soon: 0, done: '領取' },
+    boost: { label: 'Maple Union Artifact', full: 'Maple Union Artifact', days: 30, soon: 3, done: '續期', btn: '已續期', check: '今天續期了' },
+    union: { label: 'Union Coin', full: 'Maple Union Coin', days: 3, soon: 0, done: '領取', btn: '已領', check: '今天領了' },
+    booster: { label: 'Mesos Booster', full: 'Maple Union Mesos Booster', weekly: 0, soon: 2, done: '購買', btn: '已買', check: '今天買了' },
   };
+  // weekly 是期限那天是星期幾（0 = 星期日）：要在那天之前買好
   const TIMER_KEEP = 12;
   const AVATAR_MAX = 120000;
   const AVATAR_TOTAL_MAX = 650000;
@@ -189,7 +252,10 @@
     if (a.job && /^[a-z0-9-]{1,32}$/.test(String(a.job))) out.job = String(a.job);
     if (typeof a.avatar === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(a.avatar) && a.avatar.length <= AVATAR_MAX) out.avatar = a.avatar;
     const tr = a.track && typeof a.track === 'object' ? a.track : {};
-    out.track = { boost: tr.boost !== false, union: tr.union !== false };
+    out.track = Object.fromEntries(Object.keys(TIMERS).map((k) => [k, tr[k] !== false]));
+    // 刷 CF 的時段：{ am: '開始監控的日期', ... }
+    out.slots = {};
+    if (a.slots && typeof a.slots === 'object') SLOTS.forEach((s) => { if (isISODate(a.slots[s.id])) out.slots[s.id] = a.slots[s.id]; });
     const t = a.timers && typeof a.timers === 'object' ? a.timers : {};
     out.timers = {};
     Object.keys(TIMERS).forEach((k) => {
@@ -250,12 +316,26 @@
     });
     const shipments = Array.from(shipById.values()).sort(byShipOrder);
 
+    // 打卡：同一格取較新的內容，但開始時間永遠保留兩邊最早的那個
+    const ckByKey = new Map();
+    [...(a.checkins || []), ...(b.checkins || [])].forEach((c0) => {
+      const c = remap.has(c0.accountId) ? { ...c0, accountId: remap.get(c0.accountId) } : c0;
+      if (!alive.has(c.accountId)) return;
+      const k = ckKey(c);
+      if (tombAt.get('c:' + k) >= (c.updatedAt || '')) return;
+      const cur = ckByKey.get(k);
+      if (!cur) { ckByKey.set(k, c); return; }
+      const keep = newer(cur, c);
+      ckByKey.set(k, { ...keep, startedAt: cur.startedAt < c.startedAt ? cur.startedAt : c.startedAt });
+    });
+    const checkins = Array.from(ckByKey.values()).sort((x, y) => (x.startedAt < y.startedAt ? -1 : 1));
+
     const sa = a.settings || {}; const sb = b.settings || {};
     const settings = { ...((sa.updatedAt || '') >= (sb.updatedAt || '') ? sa : sb) };
     const backups = [sa.lastBackupAt, sb.lastBackupAt].filter(Boolean).sort();
     settings.lastBackupAt = backups.length ? backups[backups.length - 1] : null;
 
-    return { version: SCHEMA_VERSION, settings, accounts, records, shipments, deleted: tombs };
+    return { version: SCHEMA_VERSION, settings, accounts, records, shipments, checkins, deleted: tombs };
   }
 
   const byShipOrder = (x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : (x.createdAt || '') < (y.createdAt || '') ? -1 : 1);
@@ -451,7 +531,7 @@
       };
     },
 
-    /* 定時事項（Mesos Drop Boost 續期、Union Coin 領取） */
+    /* 定時事項（Maple Union Artifact 續期、Union Coin 領取、Mesos Booster 每週購買） */
     TIMERS,
     // on = true：記下 date 做過；false：取消那天的記錄
     markTimer(accountId, kind, date, on = true) {
@@ -473,13 +553,24 @@
       });
     },
     // 某帳號某事項的狀態：last 上次做的日期、due 下次到期日、left 還剩幾天（負數 = 已過期）
-    //   state：off 不追蹤／none 還沒記錄／overdue 已過期／due 今天到期／soon 快到期／ok
+    //   state：off 不追蹤／none 還沒記錄／overdue 已過期／due 今天到期／soon 快到期／ok／todo（每週的：這週還沒買，但還有好幾天）
+    // 每週的（weekly）：從期限那天（星期日）開始算一週，週六是最後一天；這週買過就是 ok，下次期限是下週六
     timerStatus(acc, kind, today = todayISO()) {
       const def = TIMERS[kind];
       if (!acc || !def) return null;
       if (acc.track && acc.track[kind] === false) return { kind, state: 'off' };
       const list = ((acc.timers || {})[kind] || []).filter((d) => d <= today);
       const last = list.length ? list[list.length - 1] : null;
+      if (def.weekly != null) {
+        const weekStart = addDays(today, -((parseISO(today).getDay() - def.weekly + 7) % 7));
+        const lastDay = addDays(weekStart, 6);
+        if (last && last >= weekStart) {
+          const due = addDays(lastDay, 7);
+          return { kind, state: 'ok', weekly: true, bought: true, last, due, left: daysBetween(today, due), doneToday: last === today };
+        }
+        const left = daysBetween(today, lastDay);
+        return { kind, state: left === 0 ? 'due' : left <= def.soon ? 'soon' : 'todo', weekly: true, bought: false, last, due: lastDay, left, doneToday: false };
+      }
       if (!last) return { kind, state: 'none', last: null };
       const due = addDays(last, def.days);
       const left = daysBetween(today, due);
@@ -529,6 +620,7 @@
         s.accounts = s.accounts.filter((a) => a.id !== id);
         s.records = s.records.filter((r) => r.accountId !== id);
         s.shipments = (s.shipments || []).filter((x) => x.accountId !== id);
+        s.checkins = (s.checkins || []).filter((x) => x.accountId !== id);
         this._tomb(s, 'a:' + id);
       });
     },
@@ -632,38 +724,93 @@
     },
 
     // 新增或修改單筆。editingId 為空時：同帳號同日期已有記錄就更新它（不產生重複）
-    saveRecord(input, editingId) {
+    // opts.slot：同時記下這個時段的開始時間（opts.at，預設現在）；空的就不打卡
+    saveRecord(input, editingId, opts = {}) {
       const { errors, value } = this.validateRecord(input);
       if (Object.keys(errors).length) throw fieldError(errors);
       const clash = this.recordFor(value.accountId, value.date);
       if (editingId && clash && clash.id !== editingId) throw fieldError({ date: '這個帳號在這天已經有另一筆記錄' });
+      if (opts.slot && !SLOT_BY[opts.slot]) throw new Error('時段不正確');
       const targetId = editingId || (clash && clash.id);
       return this._commit((s) => {
         const now = new Date().toISOString();
         const target = targetId && s.records.find((r) => r.id === targetId);
+        let out;
         if (target) {
           // 改了日期或帳號：舊的位置留下刪除紀錄，同步時才不會在另一台裝置變成兩筆
           if (recKey(target) !== recKey(value)) this._tomb(s, 'r:' + recKey(target));
           Object.assign(target, value, { updatedAt: now });
-          return { record: target, mode: 'updated' };
+          out = { record: target, mode: 'updated' };
+        } else {
+          const rec = { id: uid('r'), ...value, updatedAt: now };
+          s.records.push(rec);
+          out = { record: rec, mode: 'created' };
         }
-        const rec = { id: uid('r'), ...value, updatedAt: now };
-        s.records.push(rec);
-        return { record: rec, mode: 'created' };
+        if (opts.slot) out.checkin = this._checkinIn(s, { accountId: value.accountId, date: value.date, slot: opts.slot, at: opts.at, balance: value.balance });
+        return out;
       });
     },
 
     // 批次新增／更新（已驗證過的 value），以帳號＋日期判斷是否已存在
-    saveMany(values) {
+    // slotFor(accountId) 回傳要打卡的時段（或空的）；打卡和記錄在同一次儲存裡完成
+    saveMany(values, { slotFor, at } = {}) {
       return this._commit((s) => {
-        let created = 0; let updated = 0;
+        let created = 0; let updated = 0; let checked = 0;
         const now = new Date().toISOString();
         values.forEach((v) => {
           const target = s.records.find((r) => r.accountId === v.accountId && r.date === v.date);
           if (target) { Object.assign(target, v, { updatedAt: now }); updated++; } else { s.records.push({ id: uid('r'), ...v, updatedAt: now }); created++; }
+          const slot = slotFor && slotFor(v.accountId);
+          if (slot && SLOT_BY[slot]) { this._checkinIn(s, { accountId: v.accountId, date: v.date, slot, at, balance: v.balance }); checked++; }
         });
-        return { created, updated };
+        return { created, updated, checked };
       });
+    },
+
+    /* 打卡（開始刷 CF 的時間） */
+    checkinFor(accountId, date, slot) {
+      return (this.state.checkins || []).find((c) => c.accountId === accountId && c.date === date && c.slot === slot) || null;
+    },
+    // 在 _commit 裡用：同一格已有打卡就只更新 balance／updatedAt，開始時間不變
+    _checkinIn(s, { accountId, date, slot, at, balance }) {
+      s.checkins = s.checkins || [];
+      const now = new Date();
+      const t = at instanceof Date && !Number.isNaN(at.getTime()) ? at : now;
+      const cur = s.checkins.find((c) => c.accountId === accountId && c.date === date && c.slot === slot);
+      if (cur) {
+        if (Number.isInteger(balance)) cur.balance = balance;
+        cur.updatedAt = now.toISOString();
+        return { checkin: cur, mode: 'kept' };
+      }
+      const ck = { id: uid('c'), accountId, date, slot, startedAt: t.toISOString(), updatedAt: now.toISOString() };
+      if (Number.isInteger(balance)) ck.balance = balance;
+      s.checkins.push(ck);
+      return { checkin: ck, mode: 'created' };
+    },
+    deleteCheckin(id) {
+      return this._commit((s) => {
+        const c = (s.checkins || []).find((x) => x.id === id);
+        s.checkins = (s.checkins || []).filter((x) => x.id !== id);
+        if (c) this._tomb(s, 'c:' + ckKey(c));
+      });
+    },
+    // 記 CF Bal 時預設記到哪個時段（只看這個帳號負責的時段）：
+    //   今天：已經開始、還沒打卡的時段裡最早的（晚開工也算回原本的時段）→ 現在所在的時段 → 下一個還沒打卡的時段
+    //   其他日子（補記）：那天還沒打卡的第一個時段
+    //   帳號沒設定時段：不打卡（回傳 ''）
+    suggestSlot(accountId, date, now = new Date()) {
+      const acc = this.account(accountId);
+      const mine = SLOTS.filter((s) => acc && acc.slots && acc.slots[s.id]).map((s) => s.id);
+      if (!mine.length) return '';
+      const open = (id) => !this.checkinFor(accountId, date, id);
+      if (date === toISO(now)) {
+        const started = mine.filter((id) => open(id) && now >= slotWindow(date, id).start);
+        if (started.length) return started[0];
+        const cur = slotOf(now).slot;
+        if (cur && mine.includes(cur)) return cur;
+        return mine.find(open) || mine[mine.length - 1];
+      }
+      return mine.find(open) || mine[0];
     },
 
     deleteRecord(id) {
@@ -721,16 +868,20 @@
       const keepIds = new Set(next.accounts.map((a) => a.id));
       const keepKeys = new Set(next.records.map(recKey));
       next.shipments = next.shipments || [];
+      next.checkins = next.checkins || [];
       const keepShips = new Set(next.shipments.map((x) => x.id));
+      const keepCks = new Set(next.checkins.map(ckKey));
       const tombs = [...(this.state.deleted || []), ...(next.deleted || [])];
       this.state.accounts.forEach((a) => { if (!keepIds.has(a.id)) tombs.push({ k: 'a:' + a.id, at: now }); });
       this.state.records.forEach((r) => { if (!keepKeys.has(recKey(r))) tombs.push({ k: 'r:' + recKey(r), at: now }); });
       (this.state.shipments || []).forEach((x) => { if (!keepShips.has(x.id)) tombs.push({ k: 's:' + x.id, at: now }); });
+      (this.state.checkins || []).forEach((c) => { if (!keepCks.has(ckKey(c))) tombs.push({ k: 'c:' + ckKey(c), at: now }); });
       next.accounts.forEach((a) => { a.updatedAt = now; });
       next.records.forEach((r) => { r.updatedAt = now; });
       next.shipments.forEach((x) => { x.updatedAt = now; });
+      next.checkins.forEach((c) => { c.updatedAt = now; });
       next.settings = { ...next.settings, updatedAt: now };
-      next.deleted = pruneTombs(tombs).filter((t) => !(t.k.startsWith('a:') && keepIds.has(t.k.slice(2))) && !(t.k.startsWith('r:') && keepKeys.has(t.k.slice(2))) && !(t.k.startsWith('s:') && keepShips.has(t.k.slice(2))));
+      next.deleted = pruneTombs(tombs).filter((t) => !(t.k.startsWith('a:') && keepIds.has(t.k.slice(2))) && !(t.k.startsWith('r:') && keepKeys.has(t.k.slice(2))) && !(t.k.startsWith('s:') && keepShips.has(t.k.slice(2))) && !(t.k.startsWith('c:') && keepCks.has(t.k.slice(2))));
       return next;
     },
     previousSnapshot() {
@@ -1020,8 +1171,81 @@
     return s;
   }
 
+  /* ---------- 準時監控 ----------
+   * 每一格 = 帳號 × 日期 × 時段。只看「帳號負責、且已經開始監控」的時段，另外帳號自己多打卡的時段也列出來（不會算漏刷）。
+   *   有打卡：延遲 = 開始時間 − 時段開始（分鐘，提早是負數）
+   *           延遲 ≤ 寬限分鐘 → 準時；否則延遲；時段結束後才記 → 依設定算「延遲」或「漏刷」
+   *   沒打卡：時段已結束 → 漏刷（未記錄）；正在進行 → 進行中（還不算漏刷）；還沒開始 → 未開始
+   * 準時率 = 準時 ÷（準時＋延遲＋漏刷），進行中和未開始不算進去
+   */
+  const Monitor = {
+    SLOTS, SLOT_BY, slotWindow, slotOf,
+    config() { return normMonitor(Store.state.settings.monitor); },
+    // 刷 CF 時數（分鐘）。每個時段結束一定準時停，所以一記下開始時間就能直接算出最終時數：
+    //   full  時段總長（6 小時）
+    //   farm  刷了多久 = 時段結束 − 開始時間（提早開始最多算滿 full；時段結束後才記 = 0；沒記錄 = 0）
+    //   avail 拿來算百分比的分母：有記錄或已結束的時段 = full；進行中還沒記錄、未開始 = 0（還不算）
+    //   plan  現在才開始的話還能刷多久（進行中、還沒記錄的時段用）
+    //   live  時段還沒結束（還在刷）
+    judge(date, slot, ck, now = new Date(), cfg = this.config()) {
+      const { start, end } = slotWindow(date, slot);
+      const full = Math.round((end - start) / 60000);
+      if (ck) {
+        const t = new Date(ck.startedAt);
+        const delay = Math.round((t - start) / 60000);
+        const afterEnd = t >= end;
+        const from = t > start ? t : start;
+        const farm = Math.max(0, Math.min(full, Math.round((end - from) / 60000)));
+        const hours = { full, avail: full, farm, plan: farm, live: now < end };
+        if (afterEnd && cfg.afterEnd === 'missed') return { status: 'missed', delay, afterEnd, ...hours };
+        return { status: delay <= cfg.grace ? 'ontime' : 'late', delay, afterEnd, ...hours };
+      }
+      if (now >= end) return { status: 'missed', delay: null, full, avail: full, farm: 0, plan: 0, live: false };
+      if (now >= start) return { status: 'open', delay: Math.round((now - start) / 60000), full, avail: 0, farm: 0, plan: Math.max(0, Math.round((end - now) / 60000)), live: true };
+      return { status: 'upcoming', delay: null, full, avail: 0, farm: 0, plan: full, live: false };
+    },
+    cells(ids, start, end, now = new Date()) {
+      const cfg = this.config(); const today = toISO(now);
+      const last = end > today ? today : end;
+      const byKey = new Map((Store.state.checkins || []).map((c) => [ckKey(c), c]));
+      const out = [];
+      ids.forEach((id) => {
+        const acc = Store.account(id);
+        if (!acc) return;
+        eachDay(start, last).forEach((date) => {
+          SLOTS.forEach((s) => {
+            const since = acc.slots && acc.slots[s.id];
+            const assigned = !!since && date >= since && acc.status === 'active';
+            const ck = byKey.get(`${id}|${date}|${s.id}`) || null;
+            if (!assigned && !ck) return;
+            out.push({ account: acc, date, slot: s.id, assigned, checkin: ck, ...this.judge(date, s.id, ck, now, cfg) });
+          });
+        });
+      });
+      return out;
+    },
+    summarize(cells) {
+      const n = { ontime: 0, late: 0, missed: 0, open: 0, upcoming: 0 };
+      cells.forEach((c) => { n[c.status]++; });
+      const judged = n.ontime + n.late + n.missed;
+      const lates = cells.filter((c) => c.status === 'late' || (c.status === 'missed' && c.checkin));
+      const avg = (xs) => (xs.length ? Math.round(xs.reduce((t, v) => t + v, 0) / xs.length) : null);
+      // 刷 CF 時數：刷了多久 ÷ 應刷多久（有記錄或已結束的時段各算整段；進行中還沒記錄、未開始的不算）
+      const started = cells.filter((c) => c.status !== 'upcoming');
+      const farm = started.reduce((t, c) => t + (c.farm || 0), 0);
+      const avail = started.reduce((t, c) => t + (c.avail || 0), 0);
+      return {
+        ...n, judged,
+        rate: judged ? n.ontime / judged : null,
+        avgLate: avg(lates.map((c) => c.delay)),
+        avgDelay: avg(cells.filter((c) => c.checkin).map((c) => Math.max(0, c.delay))),
+        farm, avail, farmRate: avail ? farm / avail : null,
+      };
+    },
+  };
+
   global.GCT = {
-    Store, Calc, CSV, PALETTE, parseAmount, buildDemoState, normalizeState, mergeStates,
+    Store, Calc, CSV, Monitor, PALETTE, parseAmount, buildDemoState, normalizeState, mergeStates,
     D: { todayISO, addDays, daysBetween, isISODate, normalizeDate, eachDay, parseISO, toISO },
   };
 })(window);

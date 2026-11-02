@@ -103,6 +103,8 @@
   // Google 登入完成後會帶著 #id_token=...&state=... 回到這個網址
   async function handleRedirect() {
     const h = location.hash;
+    // Maple M 連接 Google 試算表的授權（state=mmdrive.…）交給 mm-drive.js 處理，不是登入
+    if (/[#&]state=mmdrive\./.test(h)) return null;
     if (!/[#&](id_token|error)=/.test(h)) return null;
     const p = new URLSearchParams(h.replace(/^#/, ''));
     const back = localStorage.getItem(BACK_KEY) || '#/entry';
@@ -230,5 +232,6 @@
     reconnect: () => startLogin(),
     sessionDays: CONFIG.sessionDays,
     projectId: CONFIG.projectId,
+    clientId: CONFIG.clientId,
   };
 })(window);
