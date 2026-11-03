@@ -22,9 +22,9 @@
 
   /* ---------- 掛機規則（只用在 Maple M） ----------
    * dailyFree   每天可以免費領取的分鐘數（120）
-   * warnAfter   超過這個分鐘數就警示：可能無法領取（240 → 241 分起警示）
+   * warnAfter   自動戰鬥剩餘超過這個分鐘數就警示：可能無法領取（240 → 241 分起警示）
    * strongFrom  接近上限的強烈警示從幾分鐘開始（330）
-   * cap         免費領取的累計上限（360），超過算超限
+   * cap         自動戰鬥剩餘的累計上限（360），超過算超限
    * 「每日免費 120」和「累計上限 360」是兩件事：前者是每天送多少，後者是最多能累積到多少。 */
   const RULES_DEFAULT = { dailyFree: 120, warnAfter: 240, strongFrom: 330, cap: 360 };
 
@@ -287,14 +287,15 @@
   const cellText = (v) => (v == null ? '' : typeof v === 'number' ? String(v) : String(v));
 
   /* ---------- 計算 ---------- */
-  function idleStatus(total, rules) {
+  // minutes = 自動戰鬥剩餘分鐘；null = 沒有讀數
+  function idleStatus(minutes, rules) {
     const r = rules;
-    const key = !total ? 'none' : total > r.cap ? 'over' : total >= r.strongFrom ? 'strong' : total > r.warnAfter ? 'warn' : 'ok';
+    if (minutes == null) return { key: 'none', minutes: null, toWarn: null, toCap: null };
+    const key = minutes > r.cap ? 'over' : minutes >= r.strongFrom ? 'strong' : minutes > r.warnAfter ? 'warn' : 'ok';
     return {
-      key, total,
-      freeUsed: Math.min(total, r.dailyFree), freeLeft: Math.max(0, r.dailyFree - total),
-      toWarn: r.warnAfter - total,   // 距離 240 還差（負數 = 已超過）
-      toCap: r.cap - total,          // 距離 360 還差（負數 = 超限多少）
+      key, minutes,
+      toWarn: r.warnAfter - minutes,   // 距離 240 還差（負數 = 已超過）
+      toCap: r.cap - minutes,          // 距離 360 還差（負數 = 超限多少）
     };
   }
 
@@ -440,9 +441,9 @@
       if (cur) union += cur.to - cur.from;
       const untimed = list.filter((x) => !span(x)).reduce((n, x) => n + x.minutes, 0);
       const total = union + untimed;
-      return { total, timed: union, untimed, overlap: raw - union, conflicts, sessions: list, status: idleStatus(total, this.rules) };
+      return { total, timed: union, untimed, overlap: raw - union, conflicts, sessions: list };
     },
-    idleStatus(total) { return idleStatus(total, this.rules); },
+    idleStatus(minutes) { return idleStatus(minutes, this.rules); },
     // 檢查一段新的（或修改後的）記錄：重複就不能存，重疊要提醒
     checkSession(input, editingId) {
       const v = this._validSession(input);
@@ -503,11 +504,22 @@
     mesosFor(charId) { return this.state.mesos.filter((x) => x.charId === charId).sort((a, b) => (a.date < b.date ? -1 : 1)); },
     snapshot(charId, date) { return this.state.mesos.find((x) => x.charId === charId && x.date === date) || null; },
     // 某天的餘額：紅、黃各自取「這天或之前」最近一次有填的數字
-    // 最近一次的自動戰鬥剩餘（只是顯示讀數，警示還是看當天累計掛機）
+    // 最近一次的自動戰鬥剩餘（還可以掛機多久）
     latestRemain(charId, date) {
       const list = this.mesosFor(charId).filter((x) => x.date <= date && x.remain != null);
       const x = list[list.length - 1];
       return x ? { remain: x.remain, date: x.date, time: x.time } : null;
+    },
+    // 某天看到的剩餘和警示；不滿一分鐘算一分鐘（240:10 已超過 240 分）
+    dayRemain(charId, date) {
+      const reading = this.latestRemain(charId, date);
+      const minutes = reading ? Math.ceil(reading.remain / 60) : null;
+      return { reading, minutes, status: idleStatus(minutes, this.rules) };
+    },
+    // 只看那一天自己的讀數（期間統計用，不沿用之前的數字）
+    remainOn(charId, date) {
+      const x = this.snapshot(charId, date);
+      return x && x.remain != null ? Math.ceil(x.remain / 60) : null;
     },
     balanceAt(charId, date) {
       let red = null; let yellow = null; let redDate = null; let yellowDate = null;

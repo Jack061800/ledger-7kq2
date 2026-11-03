@@ -13,8 +13,8 @@
   const RED = 'var(--mm-red)';
   const YELLOW = 'var(--mm-yellow)';
   const NAV = [
-    { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Maple M：今天各角色掛機多久、有沒有警示，和紅／黃 Mesos 庫存' },
-    { id: 'idle', label: '掛機時間', short: '掛機', icon: 'clock', sub: '每個角色每天累計掛機分鐘，距離 240／360 分鐘還差多少' },
+    { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Maple M：各角色還能掛機多久、有沒有警示，和紅／黃 Mesos 庫存' },
+    { id: 'idle', label: '掛機時間', short: '掛機', icon: 'clock', sub: '每個角色還剩多少分鐘可以掛機，距離 240／360 分鐘還差多少' },
     { id: 'mesos', label: 'Mesos 庫存', short: '庫存', icon: 'coin', sub: '各帳號、角色的紅色和黃色 Mesos 餘額與歷史變化' },
     { id: 'sync', label: 'Drive 同步', short: '同步', icon: 'refresh', sub: '從 Google Drive 自動讀 Mesos 資料，或手動匯入、檢查差異' },
     { id: 'chars', label: '帳號與角色', short: '角色', icon: 'accounts', sub: 'Maple M 的帳號，以及每個帳號底下的角色' },
@@ -36,6 +36,9 @@
   const fmtMin = (m) => `${nfm.format(Math.round(m))} 分`;
   const fmtMinH = (m) => { const x = Math.round(m); return x >= 60 ? `${fmtMin(x)}（${U().fmtHours(x)}）` : fmtMin(x); };
   const fmtMesos = (n) => (n == null ? '—' : U().fmt(n));
+  // 剩餘：355 分 28 秒
+  const fmtLeft = (r) => { if (!r) return '—'; const s = r.remain % 60; return `${nfm.format(Math.floor(r.remain / 60))} 分${s ? ` ${s} 秒` : ''}`; };
+  const readingWhen = (r) => { if (!r) return '還沒有讀數'; return `讀數：${r.date === D.todayISO() ? '今天' : U().fmtDate(r.date)}${r.time ? ` ${r.time}` : ''}`; };
   const ago = (iso) => {
     if (!iso) return '從未';
     const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -51,7 +54,7 @@
   function idleMeta(key) {
     const r = Store.rules;
     return {
-      none: { label: '未掛機', cls: 'none' },
+      none: { label: '沒有讀數', cls: 'none' },
       ok: { label: '正常', cls: 'ok' },
       warn: { label: `超過 ${r.warnAfter} 分`, cls: 'warn' },
       strong: { label: `接近 ${r.cap} 分`, cls: 'strong' },
@@ -59,22 +62,24 @@
     }[key];
   }
   const idleBadge = (st) => { const m = idleMeta(st.key); return `<span class="idle-badge ib-${m.cls}">${m.label}</span>`; };
-  function idleBar(total) {
+  function idleBar(minutes) {
     const r = Store.rules;
-    const scale = Math.max(r.cap * 1.08, total);
+    const left = minutes || 0;
+    const scale = Math.max(r.cap * 1.08, left);
     const p = (v) => `${Math.min(100, (v / scale) * 100).toFixed(2)}%`;
-    const st = Store.idleStatus(total);
-    return `<div class="idle-bar ib-${idleMeta(st.key).cls}" role="img" aria-label="已掛機 ${total} 分，免費 ${r.dailyFree}、警示 ${r.warnAfter}、上限 ${r.cap}">
-      <span class="ib-fill" style="width:${p(total)}"></span>
+    const st = Store.idleStatus(minutes);
+    return `<div class="idle-bar ib-${idleMeta(st.key).cls}" role="img" aria-label="${minutes == null ? '沒有讀數' : `還剩 ${minutes} 分`}，每日免費 ${r.dailyFree}、警示 ${r.warnAfter}、上限 ${r.cap}">
+      <span class="ib-fill" style="width:${p(left)}"></span>
       <i class="ib-mark" style="left:${p(r.dailyFree)}" title="每日免費 ${r.dailyFree} 分"><b>${r.dailyFree}</b></i>
       <i class="ib-mark is-warn" style="left:${p(r.warnAfter)}" title="超過 ${r.warnAfter} 分開始警示"><b>${r.warnAfter}</b></i>
       <i class="ib-mark is-cap" style="left:${p(r.cap)}" title="累計上限 ${r.cap} 分"><b>${r.cap}</b></i></div>`;
   }
   function remainText(st) {
     const r = Store.rules;
+    if (st.key === 'none') return '<span class="muted">還沒有自動戰鬥剩餘的讀數，同步檔案或按「記 Mesos」填入</span>';
     const a = st.toWarn >= 0 ? `距 ${r.warnAfter} 分還差 <b>${fmtMin(st.toWarn)}</b>` : `已超過 ${r.warnAfter} 分 <b class="neg">${fmtMin(-st.toWarn)}</b>`;
     const b = st.toCap >= 0 ? `距 ${r.cap} 分還差 <b>${fmtMin(st.toCap)}</b>` : `超限 <b class="neg">${fmtMin(-st.toCap)}</b>`;
-    return `<span>${a}</span><span>${b}</span><span class="muted">每日免費 ${st.freeUsed}/${r.dailyFree} 分</span>`;
+    return `<span>${a}</span><span>${b}</span>`;
   }
   const SEVERITY = { over: 4, strong: 3, warn: 2, ok: 1, none: 0 };
 
@@ -82,7 +87,7 @@
     const { emptyState, icon } = U();
     return emptyState({
       iconName: 'accounts', title: '先建立 Maple M 的帳號和角色',
-      text: 'Maple M 的資料和 M Sea 完全分開。一個帳號底下可以有很多角色：之後每個角色每天記掛機時間，系統會提醒你超過 240／360 分鐘；Mesos 庫存可以手動記，或從 Google Drive 自動同步（同步時也會自動建立沒見過的帳號和角色）。',
+      text: 'Maple M 的資料和 M Sea 完全分開。一個帳號底下可以有很多角色：之後會顯示每個角色還能掛機多久，剩餘超過 240／360 分鐘會提醒你；Mesos 庫存可以手動記，或從 Google Drive 自動同步（同步時也會自動建立沒見過的帳號和角色）。',
       actions: `<button class="btn btn-primary" data-mm-action="new-account">${icon('plus')}新增帳號</button><a class="btn" href="#/mm/sync">${icon('refresh')}從 Drive／檔案匯入</a>`,
     });
   }
@@ -159,7 +164,7 @@
     const r = Store.rules;
     const { icon } = U();
     return `<div class="notice notice-info compact mm-rules">${icon('info')}<div><b>掛機領取規則（只套用在 Maple M）</b>
-      <p>每個角色每天免費領取 <b>${r.dailyFree} 分</b>；免費領取累計上限 <b>${r.cap} 分</b>。當天累計 <b>${r.warnAfter + 1} 分</b>起警示（超過 ${r.warnAfter} 分可能領不到），<b>${r.strongFrom} 分</b>起提醒快到上限，超過 ${r.cap} 分標為超限。</p></div>
+      <p>每個角色每天免費領取 <b>${r.dailyFree} 分</b>；自動戰鬥剩餘累計上限 <b>${r.cap} 分</b>。剩餘 <b>${r.warnAfter + 1} 分</b>起警示（超過 ${r.warnAfter} 分可能領不到），<b>${r.strongFrom} 分</b>起提醒快到上限，超過 ${r.cap} 分標為超限。</p></div>
       <a class="btn btn-sm btn-ghost" href="#/mm/settings">${icon('settings')}調整</a></div>`;
   }
 
@@ -169,9 +174,9 @@
     return has.length ? has[has.length - 1][k] - has[0][k] : null;
   }
 
-  // 今天（或某天）所有角色的掛機狀況
+  // 今天（或某天）所有角色的剩餘和自己記的掛機段落
   function dayRows(chars, date) {
-    return chars.map((c) => ({ c, d: Store.dayIdle(c.id, date) }));
+    return chars.map((c) => ({ c, d: Store.dayRemain(c.id, date), idle: Store.dayIdle(c.id, date) }));
   }
 
   /* ================= 總覽 ================= */
@@ -197,8 +202,8 @@
       const ids = selAccounts();
       const chars = selChars(ids);
       const rows = dayRows(chars, today);
-      const total = rows.reduce((t, r) => t + r.d.total, 0);
-      const active = rows.filter((r) => r.d.total > 0);
+      const total = rows.reduce((t, r) => t + (r.d.minutes || 0), 0);
+      const active = rows.filter((r) => r.d.reading);
       const by = (k) => rows.filter((r) => r.d.status.key === k).length;
       const warns = by('warn') + by('strong') + by('over');
       const series = Store.series(chars.map((c) => c.id), range.start, range.end);
@@ -206,21 +211,21 @@
       const chg = (k) => periodChange(series, k);
       const unit = (t) => `<small class="unit">${t}</small>`;
       $('#mmKpis', view).innerHTML = [
-        kpiCard({ ic: 'clock', tone: 'blue', label: '今天掛機合計', value: total ? `${+(total / 60).toFixed(1)}${unit('小時')}` : '<span class="muted">0</span>', sub: chars.length ? `${active.length} / ${chars.length} 個角色有掛機` : '所選帳號沒有角色', tip: '所選帳號底下所有啟用角色，今天的累計掛機時間加總（同一角色重疊的時段只算一次）。' }),
-        kpiCard({ ic: 'alert', tone: warns ? 'rose' : 'green', label: '警示角色', value: `${warns}${unit('個')}`, sub: warns ? `超限 ${by('over')} · 快到上限 ${by('strong')} · 超過 ${Store.rules.warnAfter} 分 ${by('warn')}` : `今天沒有角色超過 ${Store.rules.warnAfter} 分`, tip: `當天累計超過 ${Store.rules.warnAfter} 分可能無法領取；${Store.rules.strongFrom} 分起接近上限；超過 ${Store.rules.cap} 分為超限。` }),
+        kpiCard({ ic: 'clock', tone: 'blue', label: '剩餘可掛機合計', value: total ? `${+(total / 60).toFixed(1)}${unit('小時')}` : '<span class="muted">0</span>', sub: chars.length ? `${active.length} / ${chars.length} 個角色有讀數` : '所選帳號沒有角色', tip: '所選帳號底下所有啟用角色，最近一次自動戰鬥剩餘的加總。' }),
+        kpiCard({ ic: 'alert', tone: warns ? 'rose' : 'green', label: '警示角色', value: `${warns}${unit('個')}`, sub: warns ? `超限 ${by('over')} · 快到上限 ${by('strong')} · 超過 ${Store.rules.warnAfter} 分 ${by('warn')}` : `沒有角色的剩餘超過 ${Store.rules.warnAfter} 分`, tip: `自動戰鬥剩餘超過 ${Store.rules.warnAfter} 分可能無法領取；${Store.rules.strongFrom} 分起接近上限；超過 ${Store.rules.cap} 分為超限。` }),
         kpiCard({ ic: 'coin', tone: 'rose', label: '紅色 Mesos', value: fmtMesos(last.red), sub: last.red == null ? '還沒有庫存記錄' : `期間 <span class="${deltaClass(chg('red'))}">${fmtSigned(chg('red'))}</span>`, tip: '每個角色最近一次記錄的紅色 Mesos 加總。' }),
         kpiCard({ ic: 'coin', tone: 'gold', label: '黃色 Mesos', value: fmtMesos(last.yellow), sub: last.yellow == null ? '還沒有庫存記錄' : `期間 <span class="${deltaClass(chg('yellow'))}">${fmtSigned(chg('yellow'))}</span>`, tip: '每個角色最近一次記錄的黃色 Mesos 加總。' }),
       ].join('');
 
       // 今天各角色（嚴重的排前面）
-      const sorted = rows.slice().sort((a, b) => SEVERITY[b.d.status.key] - SEVERITY[a.d.status.key] || b.d.total - a.d.total);
+      const sorted = rows.slice().sort((a, b) => SEVERITY[b.d.status.key] - SEVERITY[a.d.status.key] || (b.d.minutes || 0) - (a.d.minutes || 0));
       const shown = sorted.slice(0, 10);
-      $('#mmToday', view).innerHTML = `<header class="card-head"><div><h3>今天各角色掛機 · ${fmtDateWeek(today)}</h3><p class="card-sub">點角色看每一段記錄、加一段或修改</p></div><a class="btn btn-sm" href="#/mm/idle">${icon('clock')}全部角色</a></header>
+      $('#mmToday', view).innerHTML = `<header class="card-head"><div><h3>各角色還能掛機多久 · ${fmtDateWeek(today)}</h3><p class="card-sub">最近一次的自動戰鬥剩餘；點角色看明細</p></div><a class="btn btn-sm" href="#/mm/idle">${icon('clock')}全部角色</a></header>
         ${!chars.length ? `<div class="mini-empty">${icon('accounts')}所選帳號還沒有角色，<a href="#/mm/chars">去新增</a></div>`
           : `<div class="idle-mini">${shown.map(({ c, d }) => `<button type="button" class="im-row" data-day="${c.id}">
-            <span class="cell-acct">${charAvatar(c)}<span><b>${esc(c.name)}</b><small>${esc(Store.account(c.accountId).name)}</small></span></span>
-            <span class="im-total"><b>${fmtMin(d.total)}</b>${idleBadge(d.status)}</span>
-            ${idleBar(d.total)}${d.conflicts.size ? `<span class="mm-conflict">${icon('alert', 'icon-xs')}有時段重疊</span>` : ''}</button>`).join('')}</div>
+            <span class="cell-acct">${charAvatar(c)}<span><b>${esc(c.name)}</b><small>${esc(readingWhen(d.reading))}</small></span></span>
+            <span class="im-total"><b>${fmtLeft(d.reading)}</b>${idleBadge(d.status)}</span>
+            ${idleBar(d.minutes)}</button>`).join('')}</div>
             ${sorted.length > shown.length ? `<p class="card-note">還有 ${sorted.length - shown.length} 個角色，<a href="#/mm/idle">看全部</a></p>` : ''}`}`;
       $$('[data-day]', view).forEach((b) => b.addEventListener('click', () => openDayDetail(b.dataset.day, today)));
 
@@ -244,13 +249,13 @@
         const cs = Store.characters(a.id).filter((c) => c.status === 'active');
         const s = Store.series(cs.map((c) => c.id), range.start, range.end);
         const l = s[s.length - 1] || {};
-        const idle = cs.reduce((t, c) => t + Store.dayIdle(c.id, today).total, 0);
-        const warn = cs.filter((c) => SEVERITY[Store.dayIdle(c.id, today).status.key] >= 2).length;
+        const idle = cs.reduce((t, c) => t + (Store.dayRemain(c.id, today).minutes || 0), 0);
+        const warn = cs.filter((c) => SEVERITY[Store.dayRemain(c.id, today).status.key] >= 2).length;
         return { a, cs, l, dr: periodChange(s, 'red'), dy: periodChange(s, 'yellow'), idle, warn };
       });
       const dcell = (n) => (n == null ? '—' : `<span class="delta ${deltaClass(n)}">${fmtSigned(n)}</span>`);
-      $('#mmAccts', view).innerHTML = `<header class="card-head"><div><h3>各帳號</h3><p class="card-sub">今天掛機、警示和 Mesos 庫存（期間 = 這段期間的變化）</p></div><a class="btn btn-sm" href="#/mm/chars">${icon('accounts')}帳號與角色</a></header>
-        ${accRows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>帳號</th><th class="num">角色</th><th class="num">今天掛機</th><th>警示</th><th class="num">紅色</th><th class="num">期間</th><th class="num">黃色</th><th class="num">期間</th></tr></thead>
+      $('#mmAccts', view).innerHTML = `<header class="card-head"><div><h3>各帳號</h3><p class="card-sub">剩餘可掛機、警示和 Mesos 庫存（期間 = 這段期間的變化）</p></div><a class="btn btn-sm" href="#/mm/chars">${icon('accounts')}帳號與角色</a></header>
+        ${accRows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>帳號</th><th class="num">角色</th><th class="num">剩餘合計</th><th>警示</th><th class="num">紅色</th><th class="num">期間</th><th class="num">黃色</th><th class="num">期間</th></tr></thead>
           <tbody>${accRows.map(({ a, cs, l, dr, dy, idle, warn }) => `<tr><td><span class="cell-acct">${acctAvatar(a, 'xs')}<span>${esc(a.name)}</span></span></td><td class="num">${cs.length}</td><td class="num">${idle ? fmtMin(idle) : '<span class="muted">—</span>'}</td>
             <td>${warn ? `<span class="idle-badge ib-warn">${warn} 個角色</span>` : '<span class="muted">—</span>'}</td>
             <td class="num">${fmtMesos(l.red)}</td><td class="num">${dcell(dr)}</td>
@@ -301,15 +306,15 @@
         // 停用的角色：那天有記錄才顯示
         const cs = Store.characters(a.id).filter((c) => c.status === 'active' || Store.sessionsFor(c.id, date).length);
         const rows = dayRows(cs, date);
-        const sum = rows.reduce((t, r) => t + r.d.total, 0);
+        const sum = rows.reduce((t, r) => t + (r.d.minutes || 0), 0);
         const warn = rows.filter((r) => SEVERITY[r.d.status.key] >= 2).length;
-        return `<article class="card mm-acct"><header class="card-head"><div class="cell-acct">${acctAvatar(a)}<span><h3>${esc(a.name)} ${statusTag(a)}</h3><p class="card-sub">${cs.length} 個角色 · 合計 ${fmtMinH(sum)}${warn ? ` · <span class="neg">${warn} 個警示</span>` : ''}</p></span></div>
+        return `<article class="card mm-acct"><header class="card-head"><div class="cell-acct">${acctAvatar(a)}<span><h3>${esc(a.name)} ${statusTag(a)}</h3><p class="card-sub">${cs.length} 個角色 · 剩餘合計 ${fmtMinH(sum)}${warn ? ` · <span class="neg">${warn} 個警示</span>` : ''}</p></span></div>
           <button type="button" class="btn btn-sm" data-mm-action="new-char" data-account="${a.id}">${icon('plus')}新增角色</button></header>
-          ${rows.length ? `<div class="idle-list">${rows.map(({ c, d }) => `<div class="idle-row ${d.status.key !== 'none' ? `is-${idleMeta(d.status.key).cls}` : ''}">
+          ${rows.length ? `<div class="idle-list">${rows.map(({ c, d, idle }) => `<div class="idle-row ${d.status.key !== 'none' ? `is-${idleMeta(d.status.key).cls}` : ''}">
               <button type="button" class="ir-who" data-day="${c.id}"><span class="cell-acct">${charAvatar(c, 'sm')}<span><b>${esc(c.name)}</b><small>${esc(c.job || '')}${c.status !== 'active' ? ' · 停用' : ''}</small></span></span></button>
-              <div class="ir-total"><b>${fmtMin(d.total)}</b>${idleBadge(d.status)}</div>
-              <div class="ir-bar">${idleBar(d.total)}<div class="ir-meta">${remainText(d.status)}</div></div>
-              <div class="ir-info"><span>${d.sessions.length ? `${d.sessions.length} 段` : '沒有記錄'}</span>${Store.latestRemain(c.id, date) ? `<span title="遊戲裡的自動戰鬥剩餘（最近一次讀數），不影響警示">剩餘 ${remainText2(Store.latestRemain(c.id, date))}</span>` : ''}${d.conflicts.size ? `<span class="mm-conflict" title="有時段重疊，重疊的 ${d.overlap} 分只算一次">${icon('alert', 'icon-xs')}重疊 ${d.overlap} 分</span>` : ''}</div>
+              <div class="ir-total"><b>${fmtLeft(d.reading)}</b>${idleBadge(d.status)}</div>
+              <div class="ir-bar">${idleBar(d.minutes)}<div class="ir-meta">${remainText(d.status)}</div></div>
+              <div class="ir-info"><span>${esc(readingWhen(d.reading))}</span>${idle.sessions.length ? `<span>自己記 ${idle.sessions.length} 段，${fmtMin(idle.total)}</span>` : ''}${idle.conflicts.size ? `<span class="mm-conflict" title="有時段重疊，重疊的 ${idle.overlap} 分只算一次">${icon('alert', 'icon-xs')}重疊 ${idle.overlap} 分</span>` : ''}</div>
               <div class="row-actions"><button type="button" class="icon-btn" data-mm-action="session" data-char="${c.id}" data-date="${date}" title="加一段掛機" aria-label="為 ${esc(c.name)} 加一段掛機">${icon('plus')}</button>
                 <button type="button" class="icon-btn" data-day="${c.id}" title="看明細" aria-label="${esc(c.name)} 的明細">${icon('list')}</button></div>
             </div>`).join('')}</div>` : `<div class="mini-empty">${icon('accounts')}這個帳號還沒有角色</div>`}
@@ -321,7 +326,7 @@
     update(false);
   }
 
-  // 期間統計：每個角色在一段期間內的掛機狀況
+  // 期間統計：每個角色在一段期間內的自動戰鬥剩餘（只算那天有讀數的日子）
   function renderPeriod(card, ids) {
     const { $$, icon, esc, ui, saveUI, rerender } = U();
     const range = mmRange();
@@ -329,20 +334,19 @@
     const r = Store.rules;
     const chars = selChars(ids, false);
     const stats = chars.map((c) => {
-      const tot = days.map((d) => Store.dayIdle(c.id, d));
-      const on = tot.filter((x) => x.total > 0);
+      const on = days.map((d) => Store.remainOn(c.id, d)).filter((m) => m != null);
       return {
-        c, days: on.length, avg: on.length ? on.reduce((t, x) => t + x.total, 0) / on.length : null, max: on.length ? Math.max(...on.map((x) => x.total)) : null,
-        warn: tot.filter((x) => x.total > r.warnAfter).length, over: tot.filter((x) => x.total > r.cap).length, conflicts: tot.filter((x) => x.conflicts.size).length,
+        c, days: on.length, avg: on.length ? on.reduce((t, m) => t + m, 0) / on.length : null, max: on.length ? Math.max(...on) : null,
+        warn: on.filter((m) => m > r.warnAfter).length, over: on.filter((m) => m > r.cap).length,
       };
     }).filter((s) => s.days || s.c.status === 'active');
-    card.innerHTML = `<header class="card-head"><div><h3>期間統計</h3><p class="card-sub">${esc(range.label)}：每個角色有掛機的天數、平均、最多一天，超過 ${r.warnAfter}／${r.cap} 分的天數。點一列看每天的數字。</p></div>
+    card.innerHTML = `<header class="card-head"><div><h3>期間統計</h3><p class="card-sub">${esc(range.label)}：每個角色有讀數的天數、平均剩餘、最多一天，剩餘超過 ${r.warnAfter}／${r.cap} 分的天數。點一列看每天的數字。</p></div>
       <div class="seg seg-sm" role="group" aria-label="期間">${[['7', '7 天'], ['30', '30 天'], ['90', '90 天']].map(([v, l]) => `<button type="button" class="seg-btn ${ui.mmRange === v ? 'active' : ''}" data-prange="${v}">${l}</button>`).join('')}</div></header>
-      ${stats.some((s) => s.days) ? `<div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>帳號</th><th class="num">有掛機</th><th class="num">平均／天</th><th class="num">最多一天</th><th class="num">超過 ${r.warnAfter}</th><th class="num">超限</th><th class="num">重疊</th></tr></thead>
+      ${stats.some((s) => s.days) ? `<div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>帳號</th><th class="num">有讀數</th><th class="num">平均剩餘</th><th class="num">最多一天</th><th class="num">超過 ${r.warnAfter}</th><th class="num">超限</th></tr></thead>
         <tbody>${stats.map((s) => `<tr class="is-click" data-hist="${s.c.id}" tabindex="0"><td><span class="cell-acct">${charAvatar(s.c)}<span>${esc(s.c.name)}</span></span></td><td>${esc(Store.account(s.c.accountId).name)}</td>
           <td class="num">${s.days} 天</td><td class="num">${s.avg == null ? '—' : fmtMin(s.avg)}</td><td class="num">${s.max == null ? '—' : fmtMin(s.max)}</td>
-          <td class="num">${s.warn ? `<span class="idle-badge ib-warn">${s.warn} 天</span>` : '0'}</td><td class="num">${s.over ? `<span class="idle-badge ib-over">${s.over} 天</span>` : '0'}</td><td class="num">${s.conflicts || '0'}</td></tr>`).join('')}</tbody></table></div>`
-        : `<div class="mini-empty">${icon('clock')}這段期間還沒有掛機記錄</div>`}`;
+          <td class="num">${s.warn ? `<span class="idle-badge ib-warn">${s.warn} 天</span>` : '0'}</td><td class="num">${s.over ? `<span class="idle-badge ib-over">${s.over} 天</span>` : '0'}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="mini-empty">${icon('clock')}這段期間還沒有自動戰鬥剩餘的讀數</div>`}`;
     $$('[data-prange]', card).forEach((b) => b.addEventListener('click', () => { ui.mmRange = b.dataset.prange; saveUI(); rerender(); }));
     $$('[data-hist]', card).forEach((tr) => {
       const open = () => openIdleHistory(tr.dataset.hist, range);
@@ -355,12 +359,12 @@
     const { openModal, $, $$, esc, icon, fmtDateWeek } = U();
     const c = Store.character(charId);
     const days = D.eachDay(range.start, range.end).reverse();
-    const m = openModal({ title: `${c.name} · 每天掛機`, size: 'modal-lg', body: '<div id="ihBody"></div>' });
+    const m = openModal({ title: `${c.name} · 每天剩餘`, size: 'modal-lg', body: '<div id="ihBody"></div>' });
     const draw = () => {
-      const rows = days.map((d) => ({ d, x: Store.dayIdle(charId, d) }));
-      $('#ihBody', m.el).innerHTML = `<p class="muted">${esc(Store.account(c.accountId).name)} · ${esc(range.label)}。點一天看那天的每一段。</p>
-        <ul class="md-list">${rows.map(({ d, x }) => `<li class="md-item ih-item" data-d="${d}" tabindex="0"><div class="md-when"><b>${fmtDateWeek(d)}</b><small>${x.sessions.length ? `${x.sessions.length} 段` : '沒有記錄'}</small></div>
-          <div class="ih-bar">${idleBar(x.total)}</div><div class="md-what"><b>${fmtMin(x.total)}</b>${idleBadge(x.status)}${x.conflicts.size ? `<span class="mm-conflict">${icon('alert', 'icon-xs')}重疊</span>` : ''}</div></li>`).join('')}</ul>`;
+      const rows = days.map((d) => ({ d, left: Store.remainOn(charId, d), x: Store.dayIdle(charId, d) }));
+      $('#ihBody', m.el).innerHTML = `<p class="muted">${esc(Store.account(c.accountId).name)} · ${esc(range.label)}。每天最後一次的讀數，點一天看明細。</p>
+        <ul class="md-list">${rows.map(({ d, left, x }) => `<li class="md-item ih-item" data-d="${d}" tabindex="0"><div class="md-when"><b>${fmtDateWeek(d)}</b><small>${x.sessions.length ? `自己記 ${x.sessions.length} 段` : ''}</small></div>
+          <div class="ih-bar">${idleBar(left)}</div><div class="md-what"><b>${left == null ? '—' : fmtMin(left)}</b>${idleBadge(Store.idleStatus(left))}${x.conflicts.size ? `<span class="mm-conflict">${icon('alert', 'icon-xs')}重疊</span>` : ''}</div></li>`).join('')}</ul>`;
       $$('[data-d]', m.el).forEach((li) => {
         const open = () => openDayDetail(charId, li.dataset.d, draw);
         li.addEventListener('click', open);
@@ -379,22 +383,23 @@
     const draw = () => {
       if (!Store.character(charId)) { m.close(); return; }
       const d = Store.dayIdle(charId, date);
+      const left = Store.dayRemain(charId, date);
       const r = Store.rules;
       $('#ddBody', m.el).innerHTML = `
-        <div class="dd-sum ib-${idleMeta(d.status.key).cls}"><div class="dd-total"><small>當天累計</small><b>${fmtMinH(d.total)}</b>${idleBadge(d.status)}</div>
-          <div class="grow">${idleBar(d.total)}<div class="ir-meta">${remainText(d.status)}</div></div></div>
-        ${d.status.key === 'over' ? `<div class="notice notice-error compact">${icon('alert')}<div><b>超過累計上限 ${r.cap} 分</b><p>超出的 ${d.total - r.cap} 分不在免費領取範圍內。</p></div></div>`
-          : d.status.key === 'strong' ? `<div class="notice notice-error compact">${icon('alert')}<div><b>快到上限：再 ${r.cap - d.total} 分就到 ${r.cap} 分</b><p>已經超過 ${r.warnAfter} 分，超過的部分可能無法領取。</p></div></div>`
-            : d.status.key === 'warn' ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>已超過 ${r.warnAfter} 分</b><p>超過 ${r.warnAfter} 分後可能無法領取。</p></div></div>` : ''}
+        <div class="dd-sum ib-${idleMeta(left.status.key).cls}"><div class="dd-total"><small>還能掛機</small><b>${fmtLeft(left.reading)}</b>${idleBadge(left.status)}<small>${esc(readingWhen(left.reading))}</small></div>
+          <div class="grow">${idleBar(left.minutes)}<div class="ir-meta">${remainText(left.status)}</div></div></div>
+        ${left.status.key === 'over' ? `<div class="notice notice-error compact">${icon('alert')}<div><b>超過累計上限 ${r.cap} 分</b><p>剩餘比上限多 ${left.minutes - r.cap} 分。</p></div></div>`
+          : left.status.key === 'strong' ? `<div class="notice notice-error compact">${icon('alert')}<div><b>快到上限：再 ${r.cap - left.minutes} 分就到 ${r.cap} 分</b><p>剩餘已經超過 ${r.warnAfter} 分，可能領不到每日 ${r.dailyFree} 分。</p></div></div>`
+            : left.status.key === 'warn' ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>剩餘已超過 ${r.warnAfter} 分</b><p>可能領不到每日 ${r.dailyFree} 分。</p></div></div>` : ''}
         ${d.conflicts.size ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>有 ${d.conflicts.size} 段時間重疊</b><p>重疊的 ${d.overlap} 分只算一次，累計時間沒有重複計算。標記「重疊」的記錄可能記錯了，請檢查或刪除。</p></div></div>` : ''}
         ${d.untimed && d.sessions.some((x) => x.start) ? `<p class="field-hint">只填時長的記錄（${d.untimed} 分）沒有起訖時間，無法檢查是否重疊，直接加總。</p>` : ''}
-        <div class="dd-head"><b>${d.sessions.length ? `${d.sessions.length} 段記錄` : '還沒有記錄'}</b><span class="grow"></span><button type="button" class="btn btn-sm btn-primary" data-add>${icon('plus')}加一段</button></div>
+        <div class="dd-head"><b>${d.sessions.length ? `自己記的掛機：${d.sessions.length} 段，合計 ${fmtMinH(d.total)}` : '自己記的掛機：還沒有記錄'}</b><span class="grow"></span><button type="button" class="btn btn-sm btn-primary" data-add>${icon('plus')}加一段</button></div>
         ${d.sessions.length ? `<ul class="md-list">${d.sessions.map((x) => `<li class="md-item ss-item ${d.conflicts.has(x.id) ? 'is-conflict' : ''}">
           <div class="md-when"><b>${x.start ? `${x.start} – ${x.end}` : '只填時長'}</b><small>${x.start && parseTime(x.end) <= parseTime(x.start) ? '跨過午夜' : ''}</small></div>
           <div class="md-what"><b>${fmtMin(x.minutes)}</b>${d.conflicts.has(x.id) ? `<span class="mm-conflict">${icon('alert', 'icon-xs')}重疊</span>` : ''}<span>${esc(x.note)}</span>
             <small class="muted">記錄於 ${fmtStamp(x.createdAt)}${x.updatedAt.slice(0, 16) !== x.createdAt.slice(0, 16) ? ` · 修改於 ${fmtStamp(x.updatedAt)}` : ''}</small></div>
           <div class="row-actions"><button type="button" class="icon-btn" data-edit="${x.id}" aria-label="修改" title="修改">${icon('edit')}</button><button type="button" class="icon-btn danger" data-del="${x.id}" aria-label="刪除" title="刪除">${icon('trash')}</button></div></li>`).join('')}</ul>`
-          : `<div class="mini-empty">${icon('clock')}這天還沒有掛機記錄</div>`}`;
+          : `<div class="mini-empty">${icon('clock')}這天沒有自己記的掛機。上面的剩餘是檔案裡的讀數，不用另外記。</div>`}`;
       const changed = () => { draw(); if (onChanged) onChanged(); };
       $('[data-add]', m.el).addEventListener('click', () => openSessionModal({ charId, date, onSaved: changed }));
       $$('[data-edit]', m.el).forEach((b) => b.addEventListener('click', () => openSessionModal({ session: Store.state.sessions.find((x) => x.id === b.dataset.edit), onSaved: changed })));
@@ -453,9 +458,9 @@
       let chk;
       try { chk = Store.checkSession(input(), session && session.id); } catch (e) { box.innerHTML = ''; return; }
       if (chk.duplicate) { box.innerHTML = `<div class="notice notice-error compact">${icon('alert')}<div><b>重複的記錄</b><p>這個角色這天已經有一模一樣的時段，不能再存一次。</p></div></div>`; return; }
-      const a = chk.after; const st = a.status;
-      box.innerHTML = `<div class="ss-sum ib-${idleMeta(st.key).cls}"><span>這段 <b>${fmtMin(chk.v.minutes)}</b>${chk.v.start ? `（${chk.v.start}–${chk.v.end}）` : ''}</span><span>存了之後這天合計 <b>${fmtMin(a.total)}</b> ${idleBadge(st)}</span></div>
-        ${idleBar(a.total)}<div class="ir-meta">${remainText(st)}</div>
+      const a = chk.after;
+      box.innerHTML = `<div class="ss-sum"><span>這段 <b>${fmtMin(chk.v.minutes)}</b>${chk.v.start ? `（${chk.v.start}–${chk.v.end}）` : ''}</span><span>存了之後這天合計 <b>${fmtMin(a.total)}</b></span></div>
+        <span class="field-hint">這只是你自己的記錄，不會改變「還能掛機」的剩餘；剩餘以檔案裡最新的讀數為準。</span>
         ${chk.overlaps.length ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>和其他時段重疊</b><p>${chk.overlaps.map((o) => `${o.session.start}–${o.session.end}（重疊 ${o.minutes} 分）`).join('、')}。重疊的時間只算一次。</p></div></div>` : ''}
         ${chk.maybeDuplicate ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>可能重複</b><p>這天已經有一筆一樣時長、一樣備註的記錄。</p></div></div>` : ''}`;
     }
@@ -475,11 +480,7 @@
         ui.mmLastChar = res.session.charId; saveUI();
         const d = Store.dayIdle(res.session.charId, res.session.date);
         const name = Store.character(res.session.charId).name;
-        const r = Store.rules;
-        if (d.status.key === 'over') toast(`${name} 這天累計 ${d.total} 分，超過上限 ${r.cap} 分（超限 ${d.total - r.cap} 分）`, 'error');
-        else if (d.status.key === 'strong') toast(`${name} 這天累計 ${d.total} 分，快到上限 ${r.cap} 分（還差 ${r.cap - d.total} 分）`, 'info');
-        else if (d.status.key === 'warn') toast(`${name} 這天累計 ${d.total} 分，已超過 ${r.warnAfter} 分，可能無法領取`, 'info');
-        else toast(`已記錄：${name} 這天累計 ${d.total} 分（距 ${r.warnAfter} 分還差 ${r.warnAfter - d.total} 分）`);
+        toast(`已記錄：${name} 這天合計 ${d.total} 分`);
         m.close();
         if (onSaved) onSaved();
       } catch (e) { if (e.fieldErrors) setFieldErrors(form, e.fieldErrors); else toast(e.message, 'error'); }
@@ -909,9 +910,9 @@
         <div class="row-actions"><button type="button" class="btn btn-sm" data-mm-action="new-char" data-account="${a.id}">${icon('plus')}新增角色</button>
           <button type="button" class="icon-btn" data-edit-acc="${a.id}" aria-label="編輯帳號" title="編輯帳號">${icon('edit')}</button>
           <button type="button" class="icon-btn danger" data-del-acc="${a.id}" aria-label="刪除帳號" title="刪除帳號">${icon('trash')}</button></div></header>
-        ${cs.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>職業</th><th>狀態</th><th class="num">今天掛機</th><th class="num">紅色</th><th class="num">黃色</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead><tbody>
-          ${cs.map((c) => { const d = Store.dayIdle(c.id, today); const b = Store.balanceAt(c.id, today); return `<tr class="${c.status !== 'active' ? 'is-inactive' : ''}"><td><span class="cell-acct">${charAvatar(c)}<span>${esc(c.name)}</span></span></td><td>${esc(c.job) || '<span class="muted">—</span>'}</td>
-            <td>${c.status === 'active' ? '<span class="tag tag-ok">啟用</span>' : '<span class="tag tag-muted">停用</span>'}</td><td class="num">${fmtMin(d.total)} ${d.status.key !== 'none' && d.status.key !== 'ok' ? idleBadge(d.status) : ''}</td>
+        ${cs.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>職業</th><th>狀態</th><th class="num">還能掛機</th><th class="num">紅色</th><th class="num">黃色</th><th>備註</th><th class="actions-col"><span class="sr-only">操作</span></th></tr></thead><tbody>
+          ${cs.map((c) => { const d = Store.dayRemain(c.id, today); const b = Store.balanceAt(c.id, today); return `<tr class="${c.status !== 'active' ? 'is-inactive' : ''}"><td><span class="cell-acct">${charAvatar(c)}<span>${esc(c.name)}</span></span></td><td>${esc(c.job) || '<span class="muted">—</span>'}</td>
+            <td>${c.status === 'active' ? '<span class="tag tag-ok">啟用</span>' : '<span class="tag tag-muted">停用</span>'}</td><td class="num">${fmtLeft(d.reading)} ${d.status.key !== 'none' && d.status.key !== 'ok' ? idleBadge(d.status) : ''}</td>
             <td class="num">${fmtMesos(b.red)}</td><td class="num">${fmtMesos(b.yellow)}</td><td class="note-cell">${esc(c.note) || '<span class="muted">—</span>'}</td>
             <td class="actions-col"><div class="row-actions"><button type="button" class="icon-btn" data-edit-char="${c.id}" aria-label="編輯角色" title="編輯">${icon('edit')}</button><button type="button" class="icon-btn danger" data-del-char="${c.id}" aria-label="刪除角色" title="刪除">${icon('trash')}</button></div></td></tr>`; }).join('')}
         </tbody></table></div>` : `<div class="mini-empty">${icon('accounts')}還沒有角色。<button type="button" class="link-btn" data-mm-action="new-char" data-account="${a.id}">新增第一個角色</button></div>`}</article>`;
@@ -1002,8 +1003,8 @@
       <section class="card"><header class="card-head"><div><h3>${icon('clock', 'icon-sm')} 掛機警示規則</h3><p class="card-sub">只套用在 Maple M；M Sea 的準時監控不受影響</p></div></header>
         <form class="form" id="ruleForm" novalidate>
           <div class="form-row"><div class="field"><label for="rl-free">每日免費領取</label><div class="input-group"><input id="rl-free" name="dailyFree" class="input num" inputmode="numeric" value="${r.dailyFree}"><span class="input-suffix">分</span></div><span class="field-hint">每個角色每天送的免費時間</span><span class="field-error"></span></div>
-            <div class="field"><label for="rl-cap">免費領取累計上限</label><div class="input-group"><input id="rl-cap" name="cap" class="input num" inputmode="numeric" value="${r.cap}"><span class="input-suffix">分</span></div><span class="field-hint">最多能累積到多少；超過標為超限</span><span class="field-error"></span></div></div>
-          <div class="form-row"><div class="field"><label for="rl-warn">超過幾分開始警示</label><div class="input-group"><input id="rl-warn" name="warnAfter" class="input num" inputmode="numeric" value="${r.warnAfter}"><span class="input-suffix">分</span></div><span class="field-hint">填 240 = 241 分起警示（超過 240 分可能無法領取）</span><span class="field-error"></span></div>
+            <div class="field"><label for="rl-cap">剩餘累計上限</label><div class="input-group"><input id="rl-cap" name="cap" class="input num" inputmode="numeric" value="${r.cap}"><span class="input-suffix">分</span></div><span class="field-hint">自動戰鬥剩餘最多能累積到多少；超過標為超限</span><span class="field-error"></span></div></div>
+          <div class="form-row"><div class="field"><label for="rl-warn">剩餘超過幾分開始警示</label><div class="input-group"><input id="rl-warn" name="warnAfter" class="input num" inputmode="numeric" value="${r.warnAfter}"><span class="input-suffix">分</span></div><span class="field-hint">填 240 = 剩餘 241 分起警示（超過 240 分可能無法領取）</span><span class="field-error"></span></div>
             <div class="field"><label for="rl-strong">接近上限（強烈警示）</label><div class="input-group"><input id="rl-strong" name="strongFrom" class="input num" inputmode="numeric" value="${r.strongFrom}"><span class="input-suffix">分起</span></div><span class="field-hint">預設 330：離上限 30 分內</span><span class="field-error"></span></div></div>
           <div class="rule-demo">${[0, r.dailyFree, r.warnAfter + 1, r.strongFrom, r.cap + 1].map((v) => { const s = Store.idleStatus(v); return `<div><b>${v} 分</b>${idleBadge(s)}</div>`; }).join('')}</div>
           <div class="btn-row"><button type="submit" class="btn btn-primary">${icon('check')}儲存規則</button><button type="button" class="btn btn-ghost" data-reset>恢復預設（120／240／330／360）</button></div>
@@ -1054,7 +1055,7 @@
   }
   function todayWarns() {
     const today = D.todayISO();
-    return Store.characters().filter((c) => c.status === 'active').filter((c) => SEVERITY[Store.dayIdle(c.id, today).status.key] >= 2).length;
+    return Store.characters().filter((c) => c.status === 'active').filter((c) => SEVERITY[Store.dayRemain(c.id, today).status.key] >= 2).length;
   }
   const MMSYNC_TEXT = { idle: '準備同步', syncing: '同步中…', ok: '已同步', offline: '離線中，連線後自動同步', auth: '需要重新登入 Google 才能同步', denied: '沒有使用權限', error: '同步失敗', off: '未啟用雲端同步' };
 
@@ -1075,7 +1076,7 @@
       const { icon, fmtDateWeek } = U();
       const chars = Store.characters().filter((c) => c.status === 'active');
       const today = D.todayISO();
-      const on = chars.filter((c) => Store.dayIdle(c.id, today).total > 0).length;
+      const on = chars.filter((c) => Store.dayRemain(c.id, today).reading).length;
       const warn = todayWarns();
       const C = 2 * Math.PI * 10; const ratio = chars.length ? on / chars.length : 0;
       const sync = MMSync && MMSync.enabled;
@@ -1083,7 +1084,7 @@
       return {
         center: `<a class="status-chip ${warn ? 'is-warn' : ''}" href="#/mm/idle" title="前往掛機時間">
           <svg class="status-ring" viewBox="0 0 26 26" aria-hidden="true"><circle class="track" cx="13" cy="13" r="10"/><circle class="bar" cx="13" cy="13" r="10" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - ratio)).toFixed(2)}" transform="rotate(-90 13 13)"/></svg>
-          <span>${fmtDateWeek(today)}</span><small>${chars.length ? `掛機 ${on}/${chars.length} 角色${warn ? ` · ${warn} 個警示` : ''}` : '尚無角色'}</small></a>`,
+          <span>${fmtDateWeek(today)}</span><small>${chars.length ? `有讀數 ${on}/${chars.length} 角色${warn ? ` · ${warn} 個警示` : ''}` : '尚無角色'}</small></a>`,
         actions: `${sync ? `<button type="button" class="round-btn sync-btn is-${MMSync.status}" data-mm-action="cloud-sync" title="Maple M 雲端：${MMSYNC_TEXT[MMSync.status] || ''}" aria-label="Maple M 雲端同步">${icon(bad || MMSync.status === 'offline' ? 'cloudOff' : MMSync.status === 'syncing' ? 'refresh' : 'cloud')}${bad ? '<span class="dot-badge is-dot"></span>' : ''}</button>` : ''}
           <button type="button" class="round-btn" data-mm-action="drive-sync" title="從 Drive 同步 Mesos" aria-label="從 Drive 同步 Mesos">${icon('refresh')}${['error', 'auth'].includes(Store.driveStatus().lastStatus) ? '<span class="dot-badge is-dot"></span>' : ''}</button>
           <button type="button" class="btn" data-mm-action="mesos" title="記 Mesos">${icon('coin')}<span class="btn-label">記 Mesos</span></button>
