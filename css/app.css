@@ -1380,6 +1380,7 @@ button.tg-cell:hover { border-color: var(--ms); }
   .acct-grid { grid-template-columns: minmax(0, 1fr); }
   .skeleton-grid { grid-template-columns: 1fr 1fr; }
   .page-actions { width: 100%; }
+  .seg[data-seg="sl-status"] { display: flex; max-width: 100%; overflow-x: auto; }
   .an-tile-value { font-size: 19px; }
   .donut-wrap { flex-direction: column; align-items: stretch; }
   .donut-box { align-self: center; }
