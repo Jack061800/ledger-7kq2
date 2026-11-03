@@ -182,6 +182,8 @@
         note: String(r.note || ''),
         updatedAt: r.updatedAt || new Date().toISOString(),
       };
+      // CF Bal 這個數字是什麼時候填的（判斷當天的出貨是在它之前還是之後）
+      if (r.balanceAt) rec.balanceAt = String(r.balanceAt);
       // 這次 CF Bal 增加的部分裡，有多少是出售東西得來的（只是標示，不改變 Stock／Sales 計算）
       if (r.fromSales != null) rec.fromSales = optInt(r.fromSales, where);
       state.records.push(rec);
@@ -351,16 +353,29 @@
    *   negative  sales 是負數（庫存少掉的比出貨還多，可能漏記出貨）
    *
    * 出貨記錄算進哪一筆 CF Bal：
-   *   'prev'（早上記 CF Bal）：出貨日 ≥ 上次記錄日、且 < 這次記錄日 → 今天出的貨，明天記 CF Bal 時算進今天的 Sales
-   *   'same'（晚上記 CF Bal）：出貨日 > 上次記錄日、且 ≤ 這次記錄日
-   *   還沒有下一次 CF Bal 的出貨先放在 pending，記了之後才算進 Sales
+   *   出貨日比記錄日早 → 已經反映在這筆 CF Bal 裡
+   *   同一天、當天記的出貨：看先後。先出貨再記 CF Bal 就算進這筆，記完 CF Bal 才出貨就等下一筆
+   *   同一天、事後補記的出貨，看設定：
+   *     'prev'（早上記 CF Bal）：算下一筆
+   *     'same'（晚上記 CF Bal）：算這筆
+   *   還沒有下一次 CF Bal 的出貨先放在 pending：Stock 馬上扣掉，記了 CF Bal 之後才算進 Sales
    */
   function salesDateOf(date, settings) {
     return settings && settings.salesDay === 'same' ? date : addDays(date, -1);
   }
-  function shipBelongs(shipDate, prevDate, recDate, settings) {
-    if (settings && settings.salesDay === 'same') return (prevDate == null || shipDate > prevDate) && shipDate <= recDate;
-    return (prevDate == null || shipDate >= prevDate) && shipDate < recDate;
+  // 這筆出貨是否已經反映在 rec 的 CF Bal 裡；enteredAt = 這個 CF Bal 是什麼時候填的
+  function shipCovered(s, rec, settings, enteredAt) {
+    if (s.date !== rec.date) return s.date < rec.date;
+    const entered = enteredAt || rec.balanceAt || rec.updatedAt;
+    if (entered && s.createdAt && toISO(new Date(s.createdAt)) === s.date) return s.createdAt <= entered;
+    return !!(settings && settings.salesDay === 'same');
+  }
+  function shipBelongs(s, prev, rec, settings, enteredAt) {
+    return shipCovered(s, rec, settings, enteredAt) && !(prev && shipCovered(s, prev, settings));
+  }
+  // 改了 CF Bal 才更新填寫時間；只改備註之類的不算
+  function stampBalance(target, balance, now) {
+    target.balanceAt = balance !== target.balance ? now : (target.balanceAt || target.updatedAt);
   }
   function derive(state) {
     const byAccount = new Map();
@@ -378,7 +393,7 @@
       list.forEach((r) => {
         const net = prev ? r.balance - prev.balance : null;
         const gap = prev ? daysBetween(prev.date, r.date) : null;
-        const shipList = ships.filter((s) => !used.has(s) && shipBelongs(s.date, prev ? prev.date : null, r.date, state.settings));
+        const shipList = ships.filter((s) => !used.has(s) && shipBelongs(s, prev, r, state.settings));
         shipList.forEach((s) => used.add(s));
         const shipped = (r.shipped || 0) + shipList.reduce((t, s) => t + s.amount, 0);
         const sales = net == null ? null : net + shipped;
@@ -658,14 +673,15 @@
         return ship;
       });
     },
-    // 只改出售對象和單價（數量、日期、帳號不動，Stock／Sales 計算不受影響）
-    updateShipmentSale(id, input) {
+    // 修改一筆出貨：帳號、日期、數量、備註、買家、單價（Stock Acquired 會跟著重算）
+    updateShipment(id, input) {
       const ship = (this.state.shipments || []).find((x) => x.id === id);
       if (!ship) throw new Error('找不到這筆出貨');
-      const { errors, value } = this.validateShipment({ ...ship, buyer: input.buyer, price: input.price });
-      if (errors.price) throw fieldError({ price: errors.price });
+      const { errors, value } = this.validateShipment(input);
+      if (Object.keys(errors).length) throw fieldError(errors);
       return this._commit((s) => {
         const x = s.shipments.find((y) => y.id === id);
+        x.accountId = value.accountId; x.date = value.date; x.amount = value.amount; x.note = value.note;
         if (value.buyer) x.buyer = value.buyer; else delete x.buyer;
         if (value.price != null) x.price = value.price; else delete x.price;
         x.updatedAt = nowISO();
@@ -739,6 +755,7 @@
         if (target) {
           // 改了日期或帳號：舊的位置留下刪除紀錄，同步時才不會在另一台裝置變成兩筆
           if (recKey(target) !== recKey(value)) this._tomb(s, 'r:' + recKey(target));
+          stampBalance(target, value.balance, now);
           Object.assign(target, value, { updatedAt: now });
           out = { record: target, mode: 'updated' };
         } else {
@@ -759,7 +776,7 @@
         const now = new Date().toISOString();
         values.forEach((v) => {
           const target = s.records.find((r) => r.accountId === v.accountId && r.date === v.date);
-          if (target) { Object.assign(target, v, { updatedAt: now }); updated++; } else { s.records.push({ id: uid('r'), ...v, updatedAt: now }); created++; }
+          if (target) { stampBalance(target, v.balance, now); Object.assign(target, v, { updatedAt: now }); updated++; } else { s.records.push({ id: uid('r'), ...v, updatedAt: now }); created++; }
           const slot = slotFor && slotFor(v.accountId);
           if (slot && SLOT_BY[slot]) { this._checkinIn(s, { accountId: v.accountId, date: v.date, slot, at, balance: v.balance }); checked++; }
         });
@@ -844,6 +861,7 @@
           const existing = s.records.find((r) => r.accountId === accountId && r.date === it.value.date);
           if (existing) {
             if (!overwrite) { skipped++; return; }
+            stampBalance(existing, it.value.balance, now);
             Object.assign(existing, it.value, { updatedAt: now });
             updated++;
           } else {
@@ -919,10 +937,28 @@
     // 某帳號的全部出貨（依日期排序）、還沒算進 Sales 的出貨
     shipments(accountId) { return Store.derived().shipsByAccount.get(accountId) || []; },
     pendingShipments(accountId) { return Store.derived().pending.get(accountId) || []; },
-    // 如果在 date 記一筆 CF Bal，會算進哪些出貨（用在輸入時的即時試算）
-    shipmentsFor(accountId, date) {
-      const prev = this.latestBefore(this.list(accountId), date);
-      return this.shipments(accountId).filter((s) => !s.rejected && shipBelongs(s.date, prev ? prev.date : null, date, Store.state.settings));
+    // date 當天或之前、還沒反映在 CF Bal 裡的出貨合計
+    pendingTotal(accountId, date = todayISO()) {
+      return this.pendingShipments(accountId).reduce((t, s) => (s.date <= date ? t + s.amount : t), 0);
+    },
+    // 目前的 Stock = 最近一次 CF Bal − 之後的出貨；沒有記錄為 null
+    stock(accountId, date = todayISO()) {
+      const r = this.latestOnOrBefore(this.list(accountId), date);
+      return r ? r.balance - this.pendingTotal(accountId, date) : null;
+    },
+    // 如果在 date 記一筆 CF Bal（balance 是輸入中的數字），會算進哪些出貨（用在輸入時的即時試算）
+    shipmentsFor(accountId, date, balance) {
+      const list = this.list(accountId);
+      const prev = this.latestBefore(list, date);
+      const existing = list.find((r) => r.date === date);
+      // 新記或改了數字 = 現在才填的 CF Bal
+      const enteredAt = existing && (balance == null || balance === existing.balance) ? undefined : new Date().toISOString();
+      return this.shipments(accountId).filter((s) => !s.rejected && shipBelongs(s, prev, existing || { date }, Store.state.settings, enteredAt));
+    },
+    // 現在記一筆 date 的出貨，是否已經反映在某一筆 CF Bal 裡（回傳那筆；沒有 = Stock 要扣）
+    shipTarget(accountId, date) {
+      const s = { date, createdAt: new Date().toISOString() };
+      return this.list(accountId).find((r) => shipCovered(s, r, Store.state.settings)) || null;
     },
 
     /* 某帳號在 [start, end] 期間的統計（依 Sales 歸屬日 salesDate 判斷是否在期間內）
@@ -953,17 +989,17 @@
       };
     },
 
-    // 每日總庫存：每天把各帳號「當天或之前最近一筆」餘額加總；從未有記錄的帳號不計入
+    // 每日總庫存：每天把各帳號「當天或之前最近一筆」餘額加總，扣掉還沒反映在 CF Bal 的出貨；從未有記錄的帳號不計入
     totalStock(accountIds, dates) {
       const lists = accountIds.map((id) => this.list(id));
       const ptr = lists.map(() => -1);
       return dates.map((date) => {
-        let total = 0; let have = 0; let exact = 0;
+        let total = 0; let have = 0; let exact = 0; let pending = 0;
         lists.forEach((list, k) => {
           while (ptr[k] + 1 < list.length && list[ptr[k] + 1].date <= date) ptr[k]++;
-          if (ptr[k] >= 0) { total += list[ptr[k]].balance; have++; if (list[ptr[k]].date === date) exact++; }
+          if (ptr[k] >= 0) { total += list[ptr[k]].balance; pending += this.pendingTotal(accountIds[k], date); have++; if (list[ptr[k]].date === date) exact++; }
         });
-        return have ? { value: total, have, exact, carried: have - exact } : { value: null, have: 0, exact: 0, carried: 0 };
+        return have ? { value: total - pending, have, exact, carried: have - exact, pending } : { value: null, have: 0, exact: 0, carried: 0, pending: 0 };
       });
     },
 
