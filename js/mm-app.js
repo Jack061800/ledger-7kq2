@@ -15,6 +15,7 @@
   const NAV = [
     { id: 'dashboard', label: '總覽', icon: 'dashboard', sub: 'Maple M：各角色還能掛機多久、有沒有警示，和紅／黃 Mesos 庫存' },
     { id: 'idle', label: '掛機時間', short: '掛機', icon: 'clock', sub: '每個角色還剩多少分鐘可以掛機，距離 240／360 分鐘還差多少' },
+    { id: 'plan', label: '掛機排程', short: '排程', icon: 'calendar', sub: '依每個角色的剩餘時間，排好每次進遊戲先掛誰、掛多久' },
     { id: 'mesos', label: 'Mesos 庫存', short: '庫存', icon: 'coin', sub: '各帳號、角色的紅色和黃色 Mesos 餘額與歷史變化' },
     { id: 'sync', label: 'Drive 同步', short: '同步', icon: 'refresh', sub: '從 Google Drive 自動讀 Mesos 資料，或手動匯入、檢查差異' },
     { id: 'chars', label: '帳號與角色', short: '角色', icon: 'accounts', sub: 'Maple M 的帳號，以及每個帳號底下的角色' },
@@ -220,7 +221,7 @@
       // 今天各角色（嚴重的排前面）
       const sorted = rows.slice().sort((a, b) => SEVERITY[b.d.status.key] - SEVERITY[a.d.status.key] || (b.d.minutes || 0) - (a.d.minutes || 0));
       const shown = sorted.slice(0, 10);
-      $('#mmToday', view).innerHTML = `<header class="card-head"><div><h3>各角色還能掛機多久 · ${fmtDateWeek(today)}</h3><p class="card-sub">最近一次的自動戰鬥剩餘；點角色看明細</p></div><a class="btn btn-sm" href="#/mm/idle">${icon('clock')}全部角色</a></header>
+      $('#mmToday', view).innerHTML = `<header class="card-head"><div><h3>各角色還能掛機多久 · ${fmtDateWeek(today)}</h3><p class="card-sub">最近一次的自動戰鬥剩餘；點角色看明細</p></div><div class="row-actions"><a class="btn btn-sm" href="#/mm/plan">${icon('calendar')}排程</a><a class="btn btn-sm" href="#/mm/idle">${icon('clock')}全部角色</a></div></header>
         ${!chars.length ? `<div class="mini-empty">${icon('accounts')}所選帳號還沒有角色，<a href="#/mm/chars">去新增</a></div>`
           : `<div class="idle-mini">${shown.map(({ c, d }) => `<button type="button" class="im-row" data-day="${c.id}">
             <span class="cell-acct">${charAvatar(c)}<span><b>${esc(c.name)}</b><small>${esc(readingWhen(d.reading))}</small></span></span>
@@ -487,6 +488,71 @@
     };
     $('[data-save]', m.el).addEventListener('click', save);
     form.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); save(); } });
+  }
+
+  /* ================= 掛機排程 ================= */
+  function renderPlan(view) {
+    const { $, icon, esc, kpiCard, fmtDateWeek, toast, setFieldErrors } = U();
+    if (!Store.accounts().length) { view.innerHTML = emptyMM(); return; }
+    const r = Store.rules; const p = Store.plan;
+    const plan = Store.idlePlan({ days: 3 });
+    const today = D.todayISO();
+    const isoOf = (t) => D.toISO(new Date(t));
+    const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+    const dayName = (iso) => (iso === today ? '今天' : iso === D.addDays(today, 1) ? '明天' : fmtDateWeek(iso));
+    // 停止時間和進遊戲不是同一天時加上「明天」等
+    const shortDay = (iso) => (iso === today ? '今天' : iso === D.addDays(today, 1) ? '明天' : `${+iso.slice(5, 7)}/${+iso.slice(8)}`);
+    const hmFrom = (t, base) => (isoOf(t) === isoOf(base) ? hm(t) : `${shortDay(isoOf(t))} ${hm(t)}`);
+    const shared = plan.lanes.filter((a) => a.name === '未分帳號' && plan.chars.filter((x) => x.char.accountId === a.id).length > 1);
+
+    const cell = (l, w) => {
+      if (!l.char) return `<td class="plan-cell is-empty"><span class="muted">沒有角色有剩餘時間</span></td>`;
+      const out = l.stopAt < w.end;
+      return `<td class="plan-cell"><span class="cell-acct">${charAvatar(l.char)}<b>${esc(l.char.name)}</b></span>
+        <small>掛 <b>${fmtMinH(l.used)}</b>，${out ? `${hmFrom(l.stopAt, w.start)} 用完` : `掛到 ${hmFrom(w.end, w.start)}`}</small>
+        <small class="muted">剩 ${fmtMin(l.before)} → ${fmtMin(l.after)}${w.refills.length ? `（含 ${hmFrom(w.refills[0], w.start)} +${r.dailyFree}）` : ''}${out && l.idle >= 1 ? ` · 之後空 ${fmtMinH(l.idle)}` : ''}</small></td>`;
+    };
+    const next = plan.windows[0];
+    const days = [];
+    plan.windows.forEach((w) => { const d = isoOf(w.start); if (!days.length || days[days.length - 1].iso !== d) days.push({ iso: d, wins: [] }); days[days.length - 1].wins.push(w); });
+    const idleLeft = Math.max(0, plan.totals.laneTime - plan.totals.used);
+
+    view.innerHTML = `
+      <div class="notice notice-info compact">${icon('info')}<div><b>怎麼排</b>
+        <p>一個帳號同時只掛一個角色。每次進遊戲，每個帳號先掛「不掛的話下次加時間會超過 ${r.cap} 分、浪費掉」最多的角色，其次掛這段能掛最久的。每個角色掛到下次進遊戲或時間用完。每天 ${esc(p.refill)} 每個角色 +${r.dailyFree} 分（最多 ${r.cap} 分）。</p>
+        <p>從每個角色最近一次的自動戰鬥剩餘開始算。讀數之後如果掛過，先到 <a href="#/mm/sync">Drive 同步</a>拿最新讀數，排程才會準。</p></div></div>
+      ${shared.length ? `<div class="notice notice-warn compact">${icon('alert')}<div><b>「未分帳號」裡有 ${plan.chars.filter((x) => shared.some((a) => a.id === x.char.accountId)).length} 個角色</b><p>排程會把它們當成同一個帳號，一次只掛一個。如果其實是不同帳號，到<a href="#/mm/chars">帳號與角色</a>把每個角色改到正確的帳號。</p></div></div>` : ''}
+      ${plan.noReading.length ? `<p class="card-note">${icon('info')}沒有自動戰鬥剩餘讀數、沒排進去：${plan.noReading.map((c) => esc(c.name)).join('、')}</p>` : ''}
+      ${!plan.chars.length || !next ? `<div class="mini-empty">${icon('calendar')}還沒有角色有自動戰鬥剩餘的讀數。<a href="#/mm/sync">從 Drive 同步</a>或按「記 Mesos」填入。</div>` : `
+      <section class="kpi-grid">
+        ${kpiCard({ ic: 'calendar', tone: 'blue', label: '下次進遊戲', value: `${dayName(isoOf(next.start))} ${hm(next.start)}`, sub: next.lanes.filter((l) => l.char).map((l) => esc(l.char.name)).join('、') || '沒有角色可掛' })}
+        ${kpiCard({ ic: 'clock', tone: 'green', label: '3 天可掛', value: `${+(plan.totals.used / 60).toFixed(1)}<small class="unit">小時</small>`, sub: `每天最多加 ${plan.totals.perDay} 分（${plan.chars.length} 個角色 × ${r.dailyFree}）`, tip: '照這個排程，3 天內所有角色加起來會掛多久。' })}
+        ${kpiCard({ ic: 'alert', tone: plan.totals.waste >= 1 ? 'rose' : 'teal', label: '預計浪費', value: `${fmtMin(plan.totals.waste)}`, sub: plan.totals.waste >= 1 ? `加時間時超過 ${r.cap} 分的部分` : '照排程掛，不會超過上限', tip: `每天 ${p.refill} 加 ${r.dailyFree} 分時，剩餘超過 ${r.cap - r.dailyFree} 分的角色，多出來的會浪費掉。` })}
+        ${kpiCard({ ic: 'info', tone: 'gold', label: '空著的時間', value: `${+(idleLeft / 60).toFixed(1)}<small class="unit">小時</small>`, sub: '帳號在線但沒有角色還有時間', tip: '每個帳號每天能掛 24 小時，但每個角色每天只加 120 分，所以時間一定會有空。這是剩餘時間不夠，不是排得不好。' })}
+      </section>
+      <section class="card"><header class="card-head"><div><h3>${icon('calendar', 'icon-sm')} 下次進遊戲 · ${dayName(isoOf(next.start))} ${hm(next.start)}</h3><p class="card-sub">每個帳號掛這個角色，掛到下次進遊戲（${hmFrom(next.end, next.start)}）</p></div></header>
+        <div class="plan-next">${next.lanes.map((l) => `<div class="plan-next-item"><small>${esc(l.account.name)}</small>${l.char ? `<span class="cell-acct">${charAvatar(l.char, 'sm')}<b>${esc(l.char.name)}</b></span>
+          <span>掛 <b>${fmtMinH(l.used)}</b>，${l.stopAt < next.end ? `${hmFrom(l.stopAt, next.start)} 時間用完` : `掛到 ${hmFrom(next.end, next.start)}`}</span><small class="muted">剩 ${fmtMin(l.before)} → ${fmtMin(l.after)}</small>` : '<span class="muted">沒有角色有剩餘時間</span>'}</div>`).join('')}</div></section>
+      <section class="card"><header class="card-head"><div><h3>3 天排程</h3><p class="card-sub">每一列是一次進遊戲，每一欄是一個帳號</p></div></header>
+        <div class="table-wrap"><table class="table plan-table"><thead><tr><th>進遊戲</th>${plan.lanes.map((a) => `<th>${esc(a.name)}</th>`).join('')}</tr></thead>
+          <tbody>${days.map((d) => `<tr class="plan-day"><th colspan="${plan.lanes.length + 1}">${esc(dayName(d.iso))}${d.iso === today || d.iso === D.addDays(today, 1) ? ` · ${esc(fmtDateWeek(d.iso))}` : ''}</th></tr>
+            ${d.wins.map((w) => `<tr><th class="plan-when"><b>${hm(w.start)}</b><small>到 ${hmFrom(w.end, w.start)}（${fmtMinH(w.len)}）</small>${w.refills.map((t) => `<small class="plan-refill">${hmFrom(t, w.start)} 每個角色 +${r.dailyFree}</small>`).join('')}</th>${w.lanes.map((l) => cell(l, w)).join('')}</tr>`).join('')}`).join('')}</tbody></table></div></section>
+      <section class="card"><header class="card-head"><div><h3>各角色</h3><p class="card-sub">排程開始時剩多少、3 天共掛多久、3 天後剩多少</p></div></header>
+        <div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>帳號</th><th>讀數</th><th class="num">開始時</th><th class="num">3 天共掛</th><th class="num">3 天後剩</th><th class="num">浪費</th></tr></thead>
+          <tbody>${plan.chars.map((x) => `<tr><td><span class="cell-acct">${charAvatar(x.char)}<span>${esc(x.char.name)}</span></span></td><td>${esc((Store.account(x.char.accountId) || {}).name || '')}</td>
+            <td class="nowrap">${fmtRemain(x.reading.remain)}<small class="muted"> · ${esc(dayName(x.reading.date))}${x.reading.time ? ` ${esc(x.reading.time)}` : ''}</small></td>
+            <td class="num">${fmtMin(x.start)}</td><td class="num">${fmtMinH(x.used)}</td><td class="num">${fmtMin(x.end)}</td><td class="num">${x.waste >= 1 ? `<span class="idle-badge ib-over">${fmtMin(x.waste)}</span>` : '0'}</td></tr>`).join('')}</tbody></table></div></section>`}
+      <section class="card"><header class="card-head"><div><h3>${icon('settings', 'icon-sm')} 排程設定</h3><p class="card-sub">只影響排程，不會改任何記錄</p></div></header>
+        <form class="form" id="planForm" novalidate>
+          <div class="form-row"><div class="field"><label for="pl-logins">每天進遊戲的時間</label><input id="pl-logins" name="logins" class="input" value="${esc(p.logins.join(', '))}" placeholder="06:00, 12:00, 17:30"><span class="field-hint">用逗號分開，24 小時制</span><span class="field-error"></span></div>
+            <div class="field"><label for="pl-refill">每天幾點加 ${r.dailyFree} 分</label><input id="pl-refill" name="refill" type="time" class="input" value="${esc(p.refill)}"><span class="field-hint">遊戲每天加自動戰鬥時間的時間</span><span class="field-error"></span></div></div>
+          <div class="btn-row"><button type="submit" class="btn btn-primary">${icon('check')}儲存</button></div>
+        </form></section>`;
+    const form = $('#planForm', view);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      try { Store.updatePlan({ logins: form.logins.value, refill: form.refill.value }); toast('已更新排程設定'); } catch (err) { if (err.fieldErrors) setFieldErrors(form, err.fieldErrors); else toast(err.message, 'error'); }
+    });
   }
 
   /* ================= Mesos 庫存 ================= */
@@ -1047,7 +1113,7 @@
   }
 
   /* ================= 遊戲登記 ================= */
-  const PAGES = { dashboard: renderDashboard, idle: renderIdle, mesos: renderMesos, sync: renderSync, chars: renderChars, settings: renderSettings };
+  const PAGES = { dashboard: renderDashboard, idle: renderIdle, plan: renderPlan, mesos: renderMesos, sync: renderSync, chars: renderChars, settings: renderSettings };
   function route(hash) {
     const h = String(hash || '').replace(/^#\/?mm\/?/, '');
     const [page, q] = h.split('?');

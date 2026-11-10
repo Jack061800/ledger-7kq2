@@ -27,6 +27,10 @@
    * cap         自動戰鬥剩餘的累計上限（360），超過算超限
    * 「每日免費 120」和「累計上限 360」是兩件事：前者是每天送多少，後者是最多能累積到多少。 */
   const RULES_DEFAULT = { dailyFree: 120, warnAfter: 240, strongFrom: 330, cap: 360 };
+  /* ---------- 掛機排程設定 ----------
+   * logins  每天進遊戲的時間（每次進去選角色開始掛，一直掛到下次進遊戲或時間用完）
+   * refill  每天幾點每個角色加 dailyFree 分（最多到 cap） */
+  const PLAN_DEFAULT = { logins: ['06:00', '12:00', '17:30'], refill: '00:00' };
 
   const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const nowISO = () => new Date().toISOString();
@@ -37,7 +41,7 @@
   function emptyState() {
     return {
       version: SCHEMA,
-      settings: { rules: { ...RULES_DEFAULT }, drive: driveDefault(), updatedAt: null },
+      settings: { rules: { ...RULES_DEFAULT }, drive: driveDefault(), plan: normPlan(null), updatedAt: null },
       accounts: [], characters: [], sessions: [], mesos: [], imports: [], deleted: [],
     };
   }
@@ -73,6 +77,11 @@
     if (!(out.warnAfter < out.cap && out.strongFrom > out.warnAfter && out.strongFrom <= out.cap && out.dailyFree >= 1)) return { ...RULES_DEFAULT };
     return out;
   }
+  function normPlan(p) {
+    const logins = p && Array.isArray(p.logins) ? [...new Set(p.logins.map((t) => parseTime(t)).filter((t) => t != null))].sort((a, b) => a - b).slice(0, 8).map(fmtClock) : [];
+    const refill = p && parseTime(p.refill) != null ? fmtClock(parseTime(p.refill)) : PLAN_DEFAULT.refill;
+    return { logins: logins.length ? logins : PLAN_DEFAULT.logins.slice(), refill };
+  }
   function normDrive(d) {
     const out = driveDefault();
     if (!d || typeof d !== 'object') return out;
@@ -93,7 +102,7 @@
     const s = emptyState();
     if (!raw || typeof raw !== 'object') return s;
     const st = raw.settings || {};
-    s.settings = { rules: normRules(st.rules), drive: normDrive(st.drive), updatedAt: typeof st.updatedAt === 'string' ? st.updatedAt : null };
+    s.settings = { rules: normRules(st.rules), drive: normDrive(st.drive), plan: normPlan(st.plan), updatedAt: typeof st.updatedAt === 'string' ? st.updatedAt : null };
     const stamp = (x) => ({ createdAt: typeof x.createdAt === 'string' ? x.createdAt : nowISO(), updatedAt: typeof x.updatedAt === 'string' ? x.updatedAt : (typeof x.createdAt === 'string' ? x.createdAt : nowISO()) });
     const ids = new Set();
     const fresh = (x) => x && typeof x.id === 'string' && !ids.has(x.id) && ids.add(x.id);
@@ -341,6 +350,7 @@
 
     get rules() { return this.state.settings.rules; },
     get drive() { return this.state.settings.drive; },
+    get plan() { return this.state.settings.plan; },
 
     /* ----- 帳號 ----- */
     accounts() { return this.state.accounts.slice().sort((a, b) => a.order - b.order); },
@@ -516,6 +526,92 @@
       const minutes = reading ? Math.ceil(reading.remain / 60) : null;
       return { reading, minutes, status: idleStatus(minutes, this.rules) };
     },
+    /* 掛機排程：從現在之後的第一次進遊戲開始，排 days 天
+     *   一個帳號同時只能掛一個角色；每次進遊戲每個帳號選一個角色，掛到下次進遊戲或時間用完
+     *   選角色：先選「不掛的話下次加時間會超過上限、浪費掉」最多的，再選這段能掛最久的，再選剩最多的
+     *   起點是每個角色最近一次的自動戰鬥剩餘（讀數之後經過的加時間會補上，讀數之後掛過的不知道）
+     * 回傳 { windows: [{ start, end, refills, lanes: [{ account, char, before, used, stopAt, after }] }], chars, totals } */
+    idlePlan({ now = new Date(), days = 3 } = {}) {
+      const r = this.rules; const p = this.plan;
+      const MS = 60000;
+      const at = (iso, min) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d, Math.floor(min / 60), min % 60).getTime(); };
+      const today = D.todayISO();
+      const chars = this.characters().filter((c) => c.status === 'active' && (this.account(c.accountId) || {}).status === 'active');
+      const state = new Map();
+      const noReading = [];
+      chars.forEach((c) => {
+        const x = this.latestRemain(c.id, today);
+        if (!x) { noReading.push(c); return; }
+        state.set(c.id, { c, rem: x.remain / 60, reading: x, readingAt: at(x.date, parseTime(x.time) == null ? 0 : parseTime(x.time)), used: 0, waste: 0 });
+      });
+      // 進遊戲時間（現在之前 30 分鐘內的也算，剛進遊戲的這次也一起排）
+      const loginMins = p.logins.map(parseTime);
+      const logins = [];
+      for (let k = -1; k <= days + 1; k++) loginMins.forEach((m) => logins.push(at(D.addDays(today, k), m)));
+      const firstIdx = logins.findIndex((t) => t >= now.getTime() - 30 * MS);
+      const wins = [];
+      for (let i = firstIdx; i < logins.length - 1 && logins[i] < now.getTime() + days * 1440 * MS; i++) wins.push([logins[i], logins[i + 1]]);
+      const start = wins.length ? wins[0][0] : now.getTime();
+      const refillMin = parseTime(p.refill);
+      const refills = [];
+      const earliest = Math.min(start, ...Array.from(state.values()).map((s) => s.readingAt));
+      const back = Math.ceil((start - earliest) / (1440 * MS)) + 1;
+      for (let k = -back; k <= days + 2; k++) refills.push(at(D.addDays(today, k), refillMin));
+      // 加時間：超過上限的部分算浪費
+      const refillAll = () => state.forEach((s) => {
+        const add = Math.min(r.dailyFree, Math.max(0, r.cap - s.rem));
+        s.waste += r.dailyFree - add;
+        s.rem += add;
+      });
+      // 讀數之後、開始排程之前的加時間
+      state.forEach((s) => {
+        refills.filter((t) => t > s.readingAt && t <= start).forEach(() => { s.rem = Math.min(r.cap, s.rem + r.dailyFree); });
+        s.start = s.rem;
+      });
+      const lanes = new Map();
+      state.forEach((s) => { const k = s.c.accountId; if (!lanes.has(k)) lanes.set(k, []); lanes.get(k).push(s); });
+      const laneList = this.accounts().filter((a) => lanes.has(a.id)).map((a) => ({ account: a, list: lanes.get(a.id) }));
+      const windows = wins.map(([t0, t1]) => {
+        const len = (t1 - t0) / MS;
+        const nextRefill = refills.find((t) => t > t0);
+        const picks = laneList.map(({ account, list }) => {
+          const cand = list.filter((s) => s.rem >= 1);
+          if (!cand.length) return { account, char: null, before: 0, used: 0, stopAt: null, after: 0 };
+          const score = (s) => {
+            const runFor = Math.min(s.rem, ((nextRefill && nextRefill <= t1 ? nextRefill : t1) - t0) / MS);
+            const wasteNo = Math.max(0, s.rem + r.dailyFree - r.cap);
+            const wasteRun = Math.max(0, s.rem - runFor + r.dailyFree - r.cap);
+            return (wasteNo - wasteRun) * 1e6 + Math.min(s.rem, len) * 1e3 + s.rem;
+          };
+          const s = cand.reduce((best, x) => (score(x) > score(best) ? x : best));
+          return { account, s, char: s.c, before: s.rem, used: 0, stopAt: null, running: true };
+        });
+        // 一段一段算：掛到加時間的那一刻先加（還在掛的角色會繼續掛），再掛到下次進遊戲
+        const inWin = refills.filter((t) => t > t0 && t <= t1);
+        let cur = t0;
+        const runTo = (b) => {
+          picks.forEach((pk) => {
+            if (!pk.s || !pk.running) return;
+            const use = Math.min(pk.s.rem, (b - cur) / MS);
+            pk.s.rem -= use; pk.used += use; pk.s.used += use;
+            if (pk.s.rem < 1e-6) { pk.s.rem = 0; pk.running = false; pk.stopAt = cur + use * MS; }
+          });
+          cur = b;
+        };
+        inWin.forEach((b) => { runTo(b); refillAll(); });
+        if (cur < t1) runTo(t1);
+        return {
+          start: t0, end: t1, len, refills: inWin,
+          lanes: picks.map((pk) => ({ account: pk.account, char: pk.char, before: pk.before, used: pk.used, stopAt: pk.char ? (pk.stopAt || t1) : null, after: pk.s ? pk.s.rem : 0, idle: len - pk.used })),
+        };
+      });
+      const list = Array.from(state.values());
+      return {
+        start, end: wins.length ? wins[wins.length - 1][1] : start, windows, lanes: laneList.map((l) => l.account), noReading,
+        chars: list.map((s) => ({ char: s.c, reading: s.reading, start: s.start, used: s.used, waste: s.waste, end: s.rem })),
+        totals: { used: list.reduce((t, s) => t + s.used, 0), waste: list.reduce((t, s) => t + s.waste, 0), perDay: list.length * r.dailyFree, laneTime: windows.reduce((t, w) => t + w.len * laneList.length, 0) },
+      };
+    },
     // 只看那一天自己的讀數（期間統計用，不沿用之前的數字）
     remainOn(charId, date) {
       const x = this.snapshot(charId, date);
@@ -596,6 +692,18 @@
       if (!errors.strongFrom && !errors.cap && n.strongFrom > n.cap) errors.strongFrom = '不能大於累計上限';
       if (Object.keys(errors).length) throw fieldError(errors);
       this._commit((s) => { s.settings.rules = n; s.settings.updatedAt = nowISO(); });
+    },
+    // logins：'06:00, 12:00, 17:30' 或陣列
+    updatePlan(input) {
+      const raw = Array.isArray(input.logins) ? input.logins : String(input.logins || '').split(/[,，、\s]+/).filter(Boolean);
+      const errors = {};
+      const bad = raw.filter((t) => parseTime(t) == null);
+      if (!raw.length) errors.logins = '至少填一個時間';
+      else if (bad.length) errors.logins = `時間格式要像 06:00（看不懂：${bad.slice(0, 3).join('、')}）`;
+      else if (raw.length > 8) errors.logins = '最多 8 個時間';
+      if (parseTime(input.refill) == null) errors.refill = '時間格式要像 00:00';
+      if (Object.keys(errors).length) throw fieldError(errors);
+      this._commit((s) => { s.settings.plan = normPlan({ logins: raw, refill: input.refill }); s.settings.updatedAt = nowISO(); });
     },
     updateDrive(patch, source = 'user') {
       this._commit((s) => { s.settings.drive = { ...s.settings.drive, ...patch }; s.settings.updatedAt = nowISO(); }, source);
